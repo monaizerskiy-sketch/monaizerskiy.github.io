@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>High-Stakes Multiplier Casino</title>
+    <title>High-Stakes Multiplier Casino (Anonymous)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Load Tone.js for dynamic sound generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
     <script type="module">
         // --- Firebase Imports ---
@@ -15,8 +14,8 @@
             signInAnonymously, 
             signInWithCustomToken, 
             onAuthStateChanged, 
-            createUserWithEmailAndPassword, 
-            signInWithEmailAndPassword, 
+            // Removed: createUserWithEmailAndPassword, 
+            // Removed: signInWithEmailAndPassword, 
             signOut,
             updateProfile 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -37,7 +36,7 @@
         let currentView = 'mines'; 
         let nickname = 'Guest'; 
 
-        // --- Game States & Audio ---
+        // --- Game States & Audio (Unchanged) ---
         let betAmount = 10;
         let sfx = {};
         let isMuted = false;
@@ -134,17 +133,17 @@
         
         // Profile UI 
         const profileStatusText = () => document.getElementById('profileStatusText');
-        const authForm = () => document.getElementById('authForm');
-        const authFormTitle = () => document.getElementById('authFormTitle');
-        const emailInput = () => document.getElementById('emailInput');
-        const passwordInput = () => document.getElementById('passwordInput');
-        const authSubmitButton = () => document.getElementById('authSubmitButton');
-        const switchAuthModeButton = () => document.getElementById('switchAuthModeButton');
+        // Removed: const authForm = () => document.getElementById('authForm');
+        // Removed: const authFormTitle = () => document.getElementById('authFormTitle');
+        // Removed: const emailInput = () => document.getElementById('emailInput');
+        // Removed: const passwordInput = () => document.getElementById('passwordInput');
+        // Removed: const authSubmitButton = () => document.getElementById('authSubmitButton');
+        // Removed: const switchAuthModeButton = () => document.getElementById('switchAuthModeButton');
         const profileManager = () => document.getElementById('profileManager');
         const profileAuthStatus = () => document.getElementById('profileAuthStatus');
 
 
-        let authMode = 'login'; // 'login' or 'register'
+        // Removed: let authMode = 'login'; // 'login' or 'register'
 
 
         // --- Firebase Initialization and Authentication ---
@@ -157,13 +156,15 @@
                 db = getFirestore(app);
                 auth = getAuth(app);
 
-                // 1. Initial Sign-In Attempt (Custom Token/Anonymous)
+                // *** MODIFICATION: Ensure only Anonymous Sign-In is used ***
                 if (initialAuthToken) {
+                    // Try custom token first (from environment), fall back to anonymous
                     await signInWithCustomToken(auth, initialAuthToken).catch(err => {
                         console.warn("Custom token sign-in failed, falling back to anonymous.", err);
                         return signInAnonymously(auth);
                     });
                 } else {
+                    // Start or resume session as Anonymous
                     await signInAnonymously(auth);
                 }
 
@@ -171,19 +172,19 @@
                 onAuthStateChanged(auth, async (user) => {
                     if (user) {
                         userId = user.uid;
-                        // Prioritize profile display name if available
-                        nickname = user.displayName || user.email || 'Anonymous Player'; 
+                        // Since only anonymous, nickname defaults to display name or generated ID
+                        nickname = user.displayName || 'Guest-' + user.uid.substring(0, 4); 
                         
                         await loadUserData();
                     } else {
-                        // Signed out or failed to sign in
+                        // This case should be rare since we immediately sign in anonymously
                         userId = null;
                         nickname = 'Guest';
                         balance = 0.00;
                         isAuthReady = true;
                         loader().classList.add('hidden');
                         renderUI();
-                        switchGameView(currentView); // Ensure view renders even without full data load
+                        switchGameView(currentView);
                     }
                 });
 
@@ -208,22 +209,22 @@
                     const initialData = { 
                         balance: balance.toFixed(2), 
                         createdAt: new Date().getTime(), 
-                        email: auth.currentUser.email || 'anonymous',
+                        email: 'anonymous', // Explicitly mark as anonymous
                         nickname: auth.currentUser.displayName || 'Player-' + auth.currentUser.uid.substring(0, 4)
                     };
                     nickname = initialData.nickname;
                     
-                    // If using email/password, ensure Firestore nickname matches Auth profile
-                    if (auth.currentUser.email && !auth.currentUser.displayName) {
-                        await updateProfile(auth.currentUser, { displayName: initialData.nickname });
-                    }
+                    // Update Auth profile display name immediately
+                    await updateProfile(auth.currentUser, { displayName: initialData.nickname });
+                    
 
                     await setDoc(userRef, initialData, { merge: true });
                 } else {
                     const data = docSnap.data();
                     balance = data.balance !== undefined ? parseFloat(data.balance) : 1000.00;
                     wheelGameState.wheelHistory = data.wheelHistory || [];
-                    nickname = data.nickname || auth.currentUser.displayName || 'Anonymous Player';
+                    // Ensure nickname is updated from Firestore or Auth profile
+                    nickname = data.nickname || auth.currentUser.displayName || 'Anonymous Player'; 
                 }
                 
                 isAuthReady = true;
@@ -265,82 +266,30 @@
             }
         };
         
-        // --- Authentication Handlers ---
+        // --- Authentication Handlers (Simplified) ---
 
-        window.submitAuthForm = async (event) => {
-            event.preventDefault();
-            const email = emailInput().value;
-            const password = passwordInput().value;
-            
-            if (!email || !password) {
-                showMessage('Email and password are required.', 'bg-yellow-500');
-                return;
-            }
-
-            try {
-                loader().classList.remove('hidden');
-                if (authMode === 'register') {
-                    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-                    const defaultNickname = `Player-${userCredential.user.uid.substring(0, 4)}`;
-                    
-                    // 1. Update the Auth profile display name immediately
-                    await updateProfile(userCredential.user, { displayName: defaultNickname });
-                    
-                    // 2. Set the initial Firestore profile data
-                    await setDoc(getUserDocRef(userCredential.user.uid), { 
-                        nickname: defaultNickname, 
-                        balance: '1000.00' // Initial balance for new users
-                    }, { merge: true });
-
-                    showMessage('Registration successful! Welcome.', 'bg-green-600');
-
-                } else {
-                    await signInWithEmailAndPassword(auth, email, password);
-                    showMessage('Sign in successful! Welcome back.', 'bg-green-600');
-                }
-                
-                // Clear the form fields upon success
-                emailInput().value = '';
-                passwordInput().value = '';
-                
-            } catch (error) {
-                console.error("Auth Error Details:", error.code, error.message);
-                let errorMessage = 'Authentication failed.';
-                if (error.code) {
-                    errorMessage = error.message.replace('Firebase: Error (auth/', '').replace(/\)\./, '').replace(/-/g, ' ');
-                }
-                showMessage(errorMessage, 'bg-red-700');
-            } finally {
-                 loader().classList.add('hidden');
-                 renderUI();
-            }
-        };
-
-        window.switchAuthMode = () => {
-            authMode = authMode === 'login' ? 'register' : 'login';
-            authFormTitle().textContent = authMode === 'login' ? 'Sign In' : 'Register New Account';
-            authSubmitButton().textContent = authMode === 'login' ? 'Sign In' : 'Register';
-            switchAuthModeButton().textContent = authMode === 'login' ? 'Need an account? Register' : 'Already have an account? Sign In';
-            emailInput().value = '';
-            passwordInput().value = '';
-        };
+        // Removed: window.submitAuthForm (No more email/password)
+        // Removed: window.switchAuthMode
 
         window.signOutUser = async () => {
+            // Since we only use anonymous sign-in, signing out and immediately signing in 
+            // anonymously again is the best way to essentially "reset" the user data 
+            // for the current session (though their old anonymous data remains in Firestore).
             try {
-                // Sign out of current registered account
                 await signOut(auth);
-                // After signing out, sign in anonymously to keep the session alive in Canvas
                 await signInAnonymously(auth); 
-                showMessage('You have been signed out. You are now playing as a Guest.', 'bg-yellow-600');
+                showMessage('You have started a new Guest session.', 'bg-yellow-600');
             } catch (error) {
-                console.error("Sign Out Error:", error);
-                showMessage('Error signing out.', 'bg-red-700');
+                console.error("Sign Out/Reset Error:", error);
+                showMessage('Error starting new guest session.', 'bg-red-700');
             }
         };
 
         window.updateNickname = async () => {
-             if (!auth.currentUser || auth.currentUser.isAnonymous) {
-                showMessage('Only registered users can change their nickname.', 'bg-red-500');
+             // Since we only use anonymous users, we check for a current user, 
+             // but don't need to check for isAnonymous
+             if (!auth.currentUser) {
+                showMessage('You must be active to change your nickname.', 'bg-red-500');
                 return;
             }
             const newNickname = document.getElementById('nicknameInput').value.trim();
@@ -354,7 +303,7 @@
             }
             
             try {
-                // 1. Update Firebase Auth Profile
+                // 1. Update Firebase Auth Profile (which is now anonymous)
                 await updateProfile(auth.currentUser, { displayName: newNickname });
                 // 2. Update Firestore document (onSnapshot will handle the state update)
                 const userRef = getUserDocRef(auth.currentUser.uid);
@@ -402,21 +351,13 @@
             balanceDisplay().textContent = balance.toFixed(2);
             document.getElementById('nicknameDisplay').textContent = nickname;
 
-            // Profile View Status
-            const isRegistered = currentAuthUser && currentAuthUser.email;
-            
-            if (isRegistered) {
-                profileAuthStatus().classList.add('hidden');
-                profileManager().classList.remove('hidden');
-                document.getElementById('currentNickname').textContent = nickname;
-                document.getElementById('nicknameInput').value = nickname;
-                profileStatusText().textContent = `Signed in as: ${currentAuthUser.email}`;
-                
-            } else {
-                profileManager().classList.add('hidden');
-                profileAuthStatus().classList.remove('hidden');
-                profileStatusText().textContent = `Currently signed in as: ${currentAuthUser ? 'Guest (Anonymous)' : 'Not Signed In'}`;
-            }
+            // Profile View Status (Simplified)
+            // Since we are ONLY anonymous, we always show the profile manager.
+            profileAuthStatus().classList.add('hidden'); // Hide the Auth Form section
+            profileManager().classList.remove('hidden'); // Show Nickname/Balance manager
+            document.getElementById('currentNickname').textContent = nickname;
+            document.getElementById('nicknameInput').value = nickname;
+            profileStatusText().textContent = `Status: Guest (Anonymous). Your progress is saved locally using a unique ID, but it may be lost if you clear your browser data or use a different device.`;
 
             // Sync bet input across all inputs that share the class
             document.querySelectorAll('.bet-input-sync').forEach(input => input.value = betInput().value);
@@ -427,6 +368,8 @@
             if (currentView === 'ball') updateBallPumpUI();
             if (currentView === 'formula') updateFormulaUI();
         };
+
+        // ... (The rest of the utility, audio, and game logic functions remain UNCHANGED)
 
         const showMessage = (text, bgColorClass) => {
             messageText().textContent = text;
@@ -544,7 +487,7 @@
             return bet;
         };
 
-        // --- Mines Game Logic ---
+        // --- Mines Game Logic (Unchanged) ---
 
         window.setMineCount = (count) => {
             minesGameState.mineCount = parseInt(count);
@@ -673,7 +616,7 @@
         };
 
         // -----------------------------------------------------------------
-        // --- Wheel Game Logic (Automated) ---
+        // --- Wheel Game Logic (Automated - Unchanged) ---
         // -----------------------------------------------------------------
 
         const updateWheelUI = (initial = false) => {
@@ -866,7 +809,7 @@
         };
 
         // -----------------------------------------------------------------
-        // --- Ball Pump Game Logic ---
+        // --- Ball Pump Game Logic (Unchanged) ---
         // -----------------------------------------------------------------
 
         const updateBallPumpUI = () => {
@@ -971,7 +914,7 @@
         };
 
         // -----------------------------------------------------------------
-        // --- Formula/Car Crash Game Logic ---
+        // --- Formula (Crash) Game Logic (Unchanged) ---
         // -----------------------------------------------------------------
         
         const updateFormulaUI = () => {
@@ -1222,14 +1165,12 @@
 
     <div class="w-full max-w-4xl mx-auto space-y-6">
         
-        <!-- Header & Controls -->
         <header class="flex justify-between items-center pb-4 border-b border-gray-700 sticky top-0 bg-gray-900 z-10">
             <div>
                 <h1 class="text-2xl font-extrabold text-yellow-400">High-Stakes Casino</h1>
                 <p class="text-sm text-gray-400">Player: <span id="nicknameDisplay" class="font-bold text-yellow-300">Guest</span></p>
             </div>
             <div class="flex items-center space-x-3">
-                <!-- Mute Button -->
                 <button id="muteButton" onclick="toggleMute()" class="w-10 h-10 flex items-center justify-center rounded-full bg-gray-600 hover:bg-gray-500 transition-colors">
                     <span id="muteIcon" class="text-xl">🔊</span>
                 </button>
@@ -1237,14 +1178,12 @@
                     <p class="text-sm text-gray-400">Balance</p>
                     <p class="text-xl font-bold text-green-400">$<span id="balance">0.00</span></p>
                 </div>
-                <!-- Profile Button (Simplified for this file) -->
                 <button onclick="switchGameView('profile')" class="w-10 h-10 flex items-center justify-center rounded-full bg-blue-600 transition-colors text-white text-lg font-bold hover:bg-blue-500">
                     👤
                 </button>
             </div>
         </header>
 
-        <!-- Game Navigation Tabs -->
         <div class="flex border-b border-gray-700 overflow-x-auto">
             <button id="minesTab" onclick="switchGameView('mines')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-300 border-b-4 border-transparent">Mines</button>
             <button id="wheelTab" onclick="switchGameView('wheel')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-300 border-b-4 border-transparent">Roulette</button>
@@ -1253,23 +1192,18 @@
             <button id="profileTab" onclick="switchGameView('profile')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-300 border-b-4 border-transparent ml-auto">Profile</button>
         </div>
 
-        <!-- Main Game Container -->
         <div id="gameContainer" class="space-y-6">
             
-            <!-- Hidden Base Bet Input (used to sync all game bet inputs) -->
             <input type="number" id="betInput" value="10" min="1" step="1" class="hidden" oninput="setBetAmount(this.value)">
 
-            <!-- --- 0. Profile View (NEW) --- -->
             <div id="profileView" class="game-view hidden">
                 <div class="card space-y-6">
-                    <h2 class="text-3xl font-extrabold text-blue-400 border-b border-gray-700 pb-3">Player Profile</h2>
+                    <h2 class="text-3xl font-extrabold text-blue-400 border-b border-gray-700 pb-3">Player Profile (Guest Mode)</h2>
                     
-                    <p id="profileStatusText" class="text-lg font-medium text-gray-300"></p>
+                    <p id="profileStatusText" class="text-lg font-medium text-gray-300">Status: Guest (Anonymous). Your progress is saved locally using a unique ID, but it may be lost if you clear your browser data or use a different device.</p>
 
-                    <!-- Profile Management (Visible only when registered/signed in) -->
-                    <div id="profileManager" class="space-y-6 hidden">
+                    <div id="profileManager" class="space-y-6">
                         
-                        <!-- Nickname Management -->
                         <div class="space-y-3 p-4 bg-gray-800 rounded-lg">
                             <h3 class="text-xl font-semibold text-yellow-400">Nickname</h3>
                             <p class="text-sm text-gray-400">Current Nickname: <span id="currentNickname" class="font-bold text-gray-100"></span></p>
@@ -1279,18 +1213,15 @@
                             </div>
                         </div>
 
-                        <!-- Balance Management -->
                         <div class="space-y-4 p-4 bg-gray-800 rounded-lg">
-                            <h3 class="text-xl font-semibold text-green-400">Balance Management</h3>
+                            <h3 class="text-xl font-semibold text-green-400">Balance Management (Simulated)</h3>
                             
-                            <!-- Deposit -->
                             <div class="flex flex-wrap items-center space-x-3">
                                 <label for="depositAmount" class="font-medium text-gray-400 w-24">Deposit</label>
                                 <input type="number" id="depositAmount" min="1" step="10" class="flex-grow p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 max-w-[120px]" value="100">
                                 <button onclick="manageBalance('deposit')" class="btn btn-green flex-grow max-w-[150px] mt-2 sm:mt-0">Deposit Funds</button>
                             </div>
 
-                            <!-- Withdraw -->
                             <div class="flex flex-wrap items-center space-x-3">
                                 <label for="withdrawAmount" class="font-medium text-gray-400 w-24">Withdraw</label>
                                 <input type="number" id="withdrawAmount" min="1" step="10" class="flex-grow p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 max-w-[120px]" value="100">
@@ -1300,45 +1231,29 @@
                             <p class="text-xs text-gray-500 mt-2">Note: All transactions are simulated for this application.</p>
                         </div>
                         
-                        <!-- Sign Out -->
                         <div class="pt-4 border-t border-gray-700">
-                             <button onclick="signOutUser()" class="btn btn-red">Sign Out</button>
+                             <button onclick="signOutUser()" class="btn btn-red">Start New Guest Session</button>
+                             <p class="text-xs text-gray-500 mt-1">This will generate a new unique ID and reset your balance to $1000.</p>
                         </div>
                     </div>
 
-                    <!-- Auth Form (Visible only when not signed in with email/password) -->
-                    <div id="profileAuthStatus" class="space-y-4">
-                        <p class="text-lg text-red-400 font-medium">Register or Sign In to save your progress and nickname permanently!</p>
-                        
-                        <form id="authForm" onsubmit="submitAuthForm(event)" class="space-y-4 p-6 bg-gray-800 rounded-lg">
-                            <h3 id="authFormTitle" class="text-2xl font-bold text-yellow-400">Sign In</h3>
-                            
-                            <input type="email" id="emailInput" class="w-full p-3 rounded-lg bg-gray-700 text-gray-100 border border-gray-600" placeholder="Email Address" required>
-                            <input type="password" id="passwordInput" class="w-full p-3 rounded-lg bg-gray-700 text-gray-100 border border-gray-600" placeholder="Password" required>
-                            
-                            <button type="submit" id="authSubmitButton" class="btn btn-blue w-full text-xl">Sign In</button>
-                            <button type="button" id="switchAuthModeButton" onclick="switchAuthMode()" class="w-full text-sm text-gray-400 hover:text-gray-200 mt-2">Need an account? Register</button>
-                        </form>
-                    </div>
+                    <div id="profileAuthStatus" class="space-y-4 hidden">
+                        </div>
 
                 </div>
             </div>
 
-            <!-- --- 1. Sapper (Mines) View --- -->
             <div id="minesView" class="game-view hidden">
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     
-                    <!-- LEFT: Controls -->
                     <div class="card lg:col-span-1 flex flex-col space-y-4">
                         <h2 class="text-xl font-semibold text-red-400 border-b border-gray-700 pb-2">Mines Setup</h2>
                         
-                        <!-- Bet Input -->
                         <div class="flex justify-between items-center">
                             <label for="betInputMines" class="font-medium text-gray-400">Bet Amount ($)</label>
                             <input type="number" id="betInputMines" value="10" min="1" step="1" class="bet-input-sync w-28 p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500 text-lg font-bold text-center" oninput="setBetAmount(this.value)">
                         </div>
 
-                        <!-- Mine Count Selector -->
                         <div id="minesSetupControls" class="space-y-3">
                             <label class="font-medium text-gray-300 block">Select Mine Count:</label>
                             <div class="grid grid-cols-2 gap-3">
@@ -1381,29 +1296,21 @@
                         </div>
                     </div> 
 
-                    <!-- RIGHT: Grid -->
                     <div class="card lg:col-span-2">
                         <div id="minesGrid" class="mines-grid-placeholder">
-                            <!-- Grid cells generated by JS -->
-                        </div>
+                            </div>
                     </div>
                 </div>
-            </div> <!-- /minesView -->
-
-            <!-- --- 2. Roulette (Wheel) View --- -->
-            <div id="wheelView" class="game-view hidden">
+            </div> <div id="wheelView" class="game-view hidden">
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <!-- LEFT: Controls -->
                     <div class="card lg:col-span-1 space-y-4">
                         <h2 class="text-xl font-semibold text-yellow-400 border-b border-gray-700 pb-2">Place Bets</h2>
                         
-                        <!-- Bet Input -->
                         <div class="flex justify-between items-center">
                             <label for="betInputWheel" class="font-medium text-gray-400">Bet Amount ($)</label>
                             <input type="number" id="betInputWheel" value="10" min="1" step="1" class="bet-input-sync w-28 p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500 text-lg font-bold text-center" oninput="setBetAmount(this.value)">
                         </div>
                         
-                        <!-- Betting Buttons -->
                         <div id="wheelBettingControls" class="space-y-3 pt-2">
                             <button onclick="placeWheelBet('red')" class="wheel-bet-btn w-full btn btn-red justify-between flex items-center">
                                 <span>2x (Red)</span>
@@ -1421,7 +1328,6 @@
                         <p class="text-xs text-gray-500 text-center pt-2">The roulette game runs automatically and rolls every 15 seconds. Bets are deducted immediately.</p>
                     </div>
 
-                    <!-- RIGHT: Wheel Display -->
                     <div class="card lg:col-span-2 space-y-4">
                         <div class="flex justify-between items-center">
                             <div class="flex items-center space-x-2">
@@ -1431,34 +1337,25 @@
                             <span id="wheelTimerDisplay" class="text-3xl font-orbitron text-yellow-400">00:00</span>
                         </div>
 
-                        <!-- Wheel Track -->
                         <div id="wheelContainer" class="relative h-16 w-full my-4">
                             <div id="wheelIndicator" class="wheel-indicator"></div>
                             <div id="wheelTrack" class="flex absolute top-0 left-0">
-                                <!-- Segments generated by JS -->
-                            </div>
+                                </div>
                         </div>
 
-                        <!-- History -->
                         <div class="pt-4 border-t border-gray-700">
                             <h3 class="text-sm font-semibold text-gray-400 mb-2">Last 20 Rolls:</h3>
                             <div id="wheelHistory" class="flex space-x-1 overflow-x-auto pb-1">
-                                <!-- History items here -->
-                            </div>
+                                </div>
                         </div>
                     </div>
                 </div>
-            </div> <!-- /wheelView -->
-
-            <!-- --- 3. Inflate & Explode (Ball Pump) View --- -->
-            <div id="ballView" class="game-view hidden">
+            </div> <div id="ballView" class="game-view hidden">
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     
-                    <!-- LEFT: Controls -->
                     <div class="card lg:col-span-1 space-y-4">
                          <h2 class="text-xl font-semibold text-purple-400 border-b border-gray-700 pb-2">Inflate Setup</h2>
-                         <!-- Bet Input -->
-                        <div class="flex justify-between items-center">
+                         <div class="flex justify-between items-center">
                             <label for="betInputBall" class="font-medium text-gray-400">Bet Amount ($)</label>
                             <input type="number" id="betInputBall" value="10" min="1" step="1" class="bet-input-sync w-28 p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500 text-lg font-bold text-center" oninput="setBetAmount(this.value)">
                         </div>
@@ -1468,7 +1365,6 @@
                         <button id="ballPumpActionButton" onclick="startGame('ball')" class="btn btn-purple w-full text-xl mt-4">START INFLATING</button>
                     </div>
 
-                    <!-- RIGHT: Game Area -->
                     <div class="card lg:col-span-2 flex flex-col items-center justify-center space-y-8">
                         
                         <div class="text-center">
@@ -1476,7 +1372,6 @@
                             <p id="ballPumpMultiplierDisplay" class="font-orbitron text-6xl text-gray-400 transition-colors">1.00x</p>
                         </div>
                         
-                        <!-- Ball Animation Area -->
                         <div class="flex items-center justify-center h-48 w-48 bg-gray-800 rounded-full border-4 border-dashed border-purple-500 relative">
                             <div id="bouncyBall" class="w-6 h-6 bg-blue-500 rounded-full shadow-2xl flex items-center justify-center text-4xl">
                                 🎈
@@ -1489,17 +1384,12 @@
                         <button id="ballPumpButton" onclick="pumpBall()" class="btn btn-blue w-full max-w-sm text-lg font-bold disabled:opacity-50" disabled>PUMP BALL</button>
                     </div>
                 </div>
-            </div> <!-- /ballView -->
-            
-            <!-- --- 4. Formula (Crash) View --- -->
-            <div id="formulaView" class="game-view hidden">
+            </div> <div id="formulaView" class="game-view hidden">
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     
-                    <!-- LEFT: Controls -->
                     <div class="card lg:col-span-1 space-y-4">
                          <h2 class="text-xl font-semibold text-red-400 border-b border-gray-700 pb-2">Race Setup</h2>
                          
-                        <!-- Bet Input -->
                         <div class="flex justify-between items-center">
                             <label for="betInputFormula" class="font-medium text-gray-400">Bet Amount ($)</label>
                             <input type="number" id="betInputFormula" value="10" min="1" step="1" class="bet-input-sync w-28 p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500 text-lg font-bold text-center" oninput="setBetAmount(this.value)">
@@ -1510,7 +1400,6 @@
                         <button id="formulaActionButton" onclick="startGame('formula')" class="btn btn-red w-full text-xl mt-4">START RACE</button>
                     </div>
 
-                    <!-- RIGHT: Game Area -->
                     <div class="card lg:col-span-2 flex flex-col items-center justify-center space-y-8 h-full min-h-[300px]">
                         
                         <div class="text-center">
@@ -1519,13 +1408,10 @@
                         </div>
                         
                         <div class="relative w-full h-24 flex items-center justify-center px-4">
-                            <!-- Simple track representation -->
                             <div class="w-full h-8 bg-gray-700 border-t-2 border-dashed border-white absolute top-1/2 transform -translate-y-1/2"></div>
-                            <!-- Simple Car (using emoji/icon) -->
                             <div id="raceCar" class="absolute left-4 top-1/2 transform -translate-y-1/2 text-4xl">
                                 🏎️
                             </div>
-                            <!-- Finish Line/Crash Indicator -->
                             <div class="absolute right-4 top-1/2 transform -translate-y-1/2 text-2xl text-red-600 font-bold z-10">
                                 🏁
                             </div>
@@ -1535,22 +1421,14 @@
 
                     </div>
                 </div>
-            </div> <!-- /formulaView -->
-        </div> <!-- /gameContainer -->
-
-        <!-- Result Display and Global Message -->
-        <div id="resultCard" class="card text-center">
+            </div> </div> <div id="resultCard" class="card text-center">
             <p id="resultDisplay" class="text-lg font-bold text-gray-300">Place a bet and choose a game.</p>
         </div>
 
-    </div> <!-- /w-full max-w-4xl mx-auto space-y-6 -->
-    
-    <!-- Floating Message Box (for alerts/notifications) -->
-    <div id="messageBox" class="fixed bottom-4 right-4 p-4 rounded-lg shadow-lg text-white opacity-0 pointer-events-none transition-opacity duration-300 bg-blue-500">
+    </div> <div id="messageBox" class="fixed bottom-4 right-4 p-4 rounded-lg shadow-lg text-white opacity-0 pointer-events-none transition-opacity duration-300 bg-blue-500">
         <p id="messageText">System Message</p>
     </div>
 
 
 </body>
-</html>
-
+                        </html>
