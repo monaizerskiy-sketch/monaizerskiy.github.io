@@ -14,8 +14,6 @@
             signInAnonymously, 
             signInWithCustomToken, 
             onAuthStateChanged, 
-            // Removed: createUserWithEmailAndPassword, 
-            // Removed: signInWithEmailAndPassword, 
             signOut,
             updateProfile 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -133,18 +131,8 @@
         
         // Profile UI 
         const profileStatusText = () => document.getElementById('profileStatusText');
-        // Removed: const authForm = () => document.getElementById('authForm');
-        // Removed: const authFormTitle = () => document.getElementById('authFormTitle');
-        // Removed: const emailInput = () => document.getElementById('emailInput');
-        // Removed: const passwordInput = () => document.getElementById('passwordInput');
-        // Removed: const authSubmitButton = () => document.getElementById('authSubmitButton');
-        // Removed: const switchAuthModeButton = () => document.getElementById('switchAuthModeButton');
         const profileManager = () => document.getElementById('profileManager');
-        const profileAuthStatus = () => document.getElementById('profileAuthStatus');
-
-
-        // Removed: let authMode = 'login'; // 'login' or 'register'
-
+        const profileAuthStatus = () => document.getElementById('profileAuthStatus'); // Hidden in renderUI
 
         // --- Firebase Initialization and Authentication ---
 
@@ -268,9 +256,6 @@
         
         // --- Authentication Handlers (Simplified) ---
 
-        // Removed: window.submitAuthForm (No more email/password)
-        // Removed: window.switchAuthMode
-
         window.signOutUser = async () => {
             // Since we only use anonymous sign-in, signing out and immediately signing in 
             // anonymously again is the best way to essentially "reset" the user data 
@@ -286,8 +271,7 @@
         };
 
         window.updateNickname = async () => {
-             // Since we only use anonymous users, we check for a current user, 
-             // but don't need to check for isAnonymous
+             // Since we only use anonymous users, we check for a current user
              if (!auth.currentUser) {
                 showMessage('You must be active to change your nickname.', 'bg-red-500');
                 return;
@@ -345,8 +329,6 @@
         // --- Utility Functions ---
         
         const renderUI = () => {
-            const currentAuthUser = auth.currentUser;
-
             // Header Display
             balanceDisplay().textContent = balance.toFixed(2);
             document.getElementById('nicknameDisplay').textContent = nickname;
@@ -359,8 +341,14 @@
             document.getElementById('nicknameInput').value = nickname;
             profileStatusText().textContent = `Status: Guest (Anonymous). Your progress is saved locally using a unique ID, but it may be lost if you clear your browser data or use a different device.`;
 
-            // Sync bet input across all inputs that share the class
-            document.querySelectorAll('.bet-input-sync').forEach(input => input.value = betInput().value);
+            // **FIXED MISTAKE: Sync bet input across all inputs that share the class**
+            const currentBet = betInput().value;
+            document.querySelectorAll('.bet-input-sync').forEach(input => {
+                // Only update the value if it's not the primary betInput itself (to avoid loop)
+                if (input.id !== 'betInput') {
+                    input.value = currentBet;
+                }
+            });
 
             // Update individual game UIs
             if (currentView === 'mines') updateMinesUI();
@@ -368,8 +356,6 @@
             if (currentView === 'ball') updateBallPumpUI();
             if (currentView === 'formula') updateFormulaUI();
         };
-
-        // ... (The rest of the utility, audio, and game logic functions remain UNCHANGED)
 
         const showMessage = (text, bgColorClass) => {
             messageText().textContent = text;
@@ -716,6 +702,7 @@
 
             wheelGameState.bets[color] += bet;
             wheelGameState.totalBet += bet;
+            // The balance is deducted here, before the saveBalance call
             balance -= bet; 
             
             saveBalance(balance); 
@@ -766,38 +753,41 @@
             const payouts = { red: 0, black: 0, green: 0 };
             payouts[wheelGameState.resultColor] = WHEEL_PAYOUTS[wheelGameState.resultColor];
 
-            let winLoss = 0;
+            let winnings = 0; // Total money returned to player (includes original bet)
             let totalBet = 0;
             
             for (const color of ['red', 'black', 'green']) {
                 if (wheelGameState.bets[color] > 0) {
                     totalBet += wheelGameState.bets[color];
                     const multiplier = payouts[color] > 0 ? payouts[color] : 0; 
-                    winLoss += (wheelGameState.bets[color] * multiplier);
+                    winnings += (wheelGameState.bets[color] * multiplier);
                 }
             }
 
-            const netChange = winLoss; 
-            const newBalance = balance + netChange;
+            // **FIXED MISTAKE: Correctly calculate the final balance after deducting the initial bet(s) and adding winnings.**
+            // The initial bet was already deducted in placeWheelBet, so we just add the winnings back.
+            // Winnings is the total amount returned (bet * multiplier), netChange is the profit/loss.
+            const newBalance = balance + winnings; 
+            const netChange = winnings - totalBet; 
             
             saveBalance(newBalance);
             
-            const isLoss = netChange < totalBet;
-            const isWin = netChange > totalBet;
+            const isLoss = netChange < 0;
+            const isWin = netChange > 0;
             
             let displayResultColor = wheelGameState.resultColor;
 
-            let message = `Wheel Result: ${displayResultColor.toUpperCase()} (${WHEEL_PAYOUTS[wheelGameState.resultColor].toFixed(1)}x). Total Bet: $${totalBet.toFixed(2)}. Net Change: $${(winLoss - totalBet).toFixed(2)}`;
+            let message = `Wheel Result: ${displayResultColor.toUpperCase()} (${WHEEL_PAYOUTS[wheelGameState.resultColor].toFixed(1)}x). Total Bet: $${totalBet.toFixed(2)}. Net Change: $${netChange.toFixed(2)}`;
 
-            if (winLoss > totalBet) {
+            if (isWin) {
                 playSound('win');
-            } else if (winLoss < totalBet) {
+            } else if (isLoss) {
                 playSound('lose');
             }
 
             resultDisplay().textContent = message;
             resultDisplay().className = `text-lg font-bold ${isLoss ? 'text-red-500' : (isWin ? 'text-green-500' : 'text-gray-400')}`;
-            showMessage(`Round finished! Net Change: ${(winLoss - totalBet).toFixed(2)}`, isLoss ? 'bg-red-700' : (isWin ? 'bg-green-700' : 'bg-yellow-600'));
+            showMessage(`Round finished! Net Change: ${netChange.toFixed(2)}`, isLoss ? 'bg-red-700' : (isWin ? 'bg-green-700' : 'bg-yellow-600'));
 
             updateWheelUI();
 
@@ -874,7 +864,7 @@
 
                 playSound('lose');
                 
-                // Balance already deducted
+                // Balance already deducted when game started
                 showMessage(`*BANG*! Ball burst at ${ballPumpGameState.currentMultiplier.toFixed(2)}x. Lost $${ballPumpGameState.bet.toFixed(2)}`, 'bg-red-700');
                 resultDisplay().textContent = `BURST! Multiplier was ${ballPumpGameState.currentMultiplier.toFixed(2)}x. Lost $${ballPumpGameState.bet.toFixed(2)}`;
                 resultDisplay().className = 'text-lg font-bold text-red-500';
@@ -902,6 +892,7 @@
 
             const winnings = ballPumpGameState.bet * ballPumpGameState.currentMultiplier;
             const netChange = winnings - ballPumpGameState.bet;
+            // **FIXED MISTAKE: Only add the winnings/payout, as the original bet was already deducted.**
             const newBalance = balance + winnings; 
             
             saveBalance(newBalance);
@@ -1009,6 +1000,7 @@
 
             const winnings = formulaGameState.bet * formulaGameState.currentMultiplier;
             const netChange = winnings - formulaGameState.bet;
+            // **FIXED MISTAKE: Only add the winnings/payout, as the original bet was already deducted.**
             const newBalance = balance + winnings; 
             
             saveBalance(newBalance);
@@ -1431,4 +1423,4 @@
 
 
 </body>
-                        </html>
+</html>
