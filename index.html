@@ -3,36 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>High-Stakes Multiplier Casino (Anonymous)</title>
+    <title>High-Stakes Multiplier Casino (Local)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
     <script type="module">
-        // --- Firebase Imports ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { 
-            getAuth, 
-            signInAnonymously, 
-            signInWithCustomToken, 
-            onAuthStateChanged, 
-            signOut,
-            updateProfile 
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // --- Game State & Local Storage Setup ---
         
-        setLogLevel('debug');
-
-        // Global Firebase variables (provided by the environment)
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'high-stakes-casino-v7';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-        let db;
-        let auth;
-        let userId = null;
         let balance = 1000.00;
-        let isAuthReady = false;
+        let nickname = 'Guest-Player'; 
         let currentView = 'mines'; 
-        let nickname = 'Guest'; 
 
         // --- Game States & Audio (Unchanged) ---
         let betAmount = 10;
@@ -132,150 +111,61 @@
         // Profile UI 
         const profileStatusText = () => document.getElementById('profileStatusText');
         const profileManager = () => document.getElementById('profileManager');
-        const profileAuthStatus = () => document.getElementById('profileAuthStatus'); // Hidden in renderUI
 
-        // --- Firebase Initialization and Authentication ---
+        // --- Local Data Management (Replaced Firebase) ---
 
-        const getUserDocRef = (uid) => doc(db, 'artifacts', appId, 'users', uid, 'data', 'user_profile');
+        const LOCAL_STORAGE_KEY = 'casino_local_data';
 
-        const initFirebase = async () => {
-            try {
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-
-                // *** MODIFICATION: Ensure only Anonymous Sign-In is used ***
-                if (initialAuthToken) {
-                    // Try custom token first (from environment), fall back to anonymous
-                    await signInWithCustomToken(auth, initialAuthToken).catch(err => {
-                        console.warn("Custom token sign-in failed, falling back to anonymous.", err);
-                        return signInAnonymously(auth);
-                    });
-                } else {
-                    // Start or resume session as Anonymous
-                    await signInAnonymously(auth);
-                }
-
-                // 2. Set up Auth State Listener
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        // Since only anonymous, nickname defaults to display name or generated ID
-                        nickname = user.displayName || 'Guest-' + user.uid.substring(0, 4); 
-                        
-                        await loadUserData();
-                    } else {
-                        // This case should be rare since we immediately sign in anonymously
-                        userId = null;
-                        nickname = 'Guest';
-                        balance = 0.00;
-                        isAuthReady = true;
-                        loader().classList.add('hidden');
-                        renderUI();
-                        switchGameView(currentView);
-                    }
-                });
-
-            } catch (error) {
-                console.error("Firebase initialization failed:", error);
-                loader().classList.add('hidden');
-                showMessage('Initialization Failed. Check console.', 'bg-red-500');
-            }
-        };
-
-        const loadUserData = async () => {
-            if (!db || !auth.currentUser) return;
-
-            const userRef = getUserDocRef(auth.currentUser.uid);
-            
-            // Use onSnapshot for real-time updates to balance/nickname
-            onSnapshot(userRef, async (docSnap) => {
-                const isNewUser = !docSnap.exists();
-                if (isNewUser) {
-                    // Initialize new user data (1000 balance for first time)
-                    balance = 1000.00;
-                    const initialData = { 
-                        balance: balance.toFixed(2), 
-                        createdAt: new Date().getTime(), 
-                        email: 'anonymous', // Explicitly mark as anonymous
-                        nickname: auth.currentUser.displayName || 'Player-' + auth.currentUser.uid.substring(0, 4)
-                    };
-                    nickname = initialData.nickname;
-                    
-                    // Update Auth profile display name immediately
-                    await updateProfile(auth.currentUser, { displayName: initialData.nickname });
-                    
-
-                    await setDoc(userRef, initialData, { merge: true });
-                } else {
-                    const data = docSnap.data();
+        const loadLocalData = () => {
+            const storedData = sessionStorage.getItem(LOCAL_STORAGE_KEY);
+            if (storedData) {
+                try {
+                    const data = JSON.parse(storedData);
                     balance = data.balance !== undefined ? parseFloat(data.balance) : 1000.00;
+                    nickname = data.nickname || 'Guest-Player';
                     wheelGameState.wheelHistory = data.wheelHistory || [];
-                    // Ensure nickname is updated from Firestore or Auth profile
-                    nickname = data.nickname || auth.currentUser.displayName || 'Anonymous Player'; 
+                } catch (e) {
+                    console.error("Error parsing local data, using defaults.", e);
                 }
-                
-                isAuthReady = true;
-                renderUI();
-                initAudio();
-                loader().classList.add('hidden');
-                switchGameView(currentView);
-                
-                // AUTOMATION: Start the wheel game immediately if it's the current view and not running
-                if (currentView === 'wheel' && !wheelGameState.isLooping) {
-                    wheelGameState.isLooping = true;
-                    wheelGameLoop();
-                }
-
-            }, (error) => {
-                console.error("Firestore listen failed:", error);
-                loader().classList.add('hidden');
-                showMessage('Data synchronization failed.', 'bg-red-500');
-            });
-        };
-
-        const saveBalance = async (newBalance) => {
-            if (!db || !auth.currentUser) {
-                 showMessage('You must be signed in to save balance changes.', 'bg-red-500');
-                 return;
             }
-            try {
-                const userRef = getUserDocRef(auth.currentUser.uid);
-                // Use a direct update here to minimize potential race conditions 
-                await setDoc(userRef, { 
-                    balance: newBalance.toFixed(2),
-                    wheelHistory: wheelGameState.wheelHistory.slice(-20) // Keep last 20 results
-                }, { merge: true });
-                // The onSnapshot listener will update the local 'balance' state
-                renderUI(); 
-            } catch (error) {
-                console.error("Error saving balance:", error);
-                showMessage('Error saving data. Check console for details.', 'bg-red-500');
-            }
-        };
-        
-        // --- Authentication Handlers (Simplified) ---
-
-        window.signOutUser = async () => {
-            // Since we only use anonymous sign-in, signing out and immediately signing in 
-            // anonymously again is the best way to essentially "reset" the user data 
-            // for the current session (though their old anonymous data remains in Firestore).
-            try {
-                await signOut(auth);
-                await signInAnonymously(auth); 
-                showMessage('You have started a new Guest session.', 'bg-yellow-600');
-            } catch (error) {
-                console.error("Sign Out/Reset Error:", error);
-                showMessage('Error starting new guest session.', 'bg-red-700');
+            // Ensure data is set to be ready immediately
+            loader().classList.add('hidden');
+            renderUI();
+            initAudio();
+            switchGameView(currentView);
+            
+            // AUTOMATION: Start the wheel game immediately if it's the current view and not running
+            if (currentView === 'wheel' && !wheelGameState.isLooping) {
+                wheelGameState.isLooping = true;
+                wheelGameLoop();
             }
         };
 
-        window.updateNickname = async () => {
-             // Since we only use anonymous users, we check for a current user
-             if (!auth.currentUser) {
-                showMessage('You must be active to change your nickname.', 'bg-red-500');
-                return;
-            }
+        const saveLocalData = (newBalance = balance) => {
+            balance = newBalance;
+            const dataToSave = {
+                balance: balance.toFixed(2),
+                nickname: nickname,
+                wheelHistory: wheelGameState.wheelHistory.slice(-20) // Keep last 20 results
+            };
+            sessionStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(dataToSave));
+            renderUI();
+        };
+
+        // --- Authentication Handlers (Simplified/Removed) ---
+
+        // Renamed/Simplified function for starting a new session
+        window.startNewGuestSession = () => {
+            sessionStorage.removeItem(LOCAL_STORAGE_KEY);
+            // Reset local state variables
+            balance = 1000.00;
+            nickname = 'Guest-Player';
+            wheelGameState.wheelHistory = [];
+            saveLocalData();
+            showMessage('You have started a new Guest session with $1000.', 'bg-yellow-600');
+        };
+
+        window.updateNickname = () => {
             const newNickname = document.getElementById('nicknameInput').value.trim();
             if (!newNickname) {
                 showMessage('Nickname cannot be empty.', 'bg-yellow-500');
@@ -286,21 +176,12 @@
                 return;
             }
             
-            try {
-                // 1. Update Firebase Auth Profile (which is now anonymous)
-                await updateProfile(auth.currentUser, { displayName: newNickname });
-                // 2. Update Firestore document (onSnapshot will handle the state update)
-                const userRef = getUserDocRef(auth.currentUser.uid);
-                await setDoc(userRef, { nickname: newNickname }, { merge: true });
-                
-                showMessage('Nickname updated successfully!', 'bg-green-600');
-            } catch (error) {
-                console.error("Nickname Update Error:", error);
-                showMessage('Failed to update nickname.', 'bg-red-700');
-            }
+            nickname = newNickname;
+            saveLocalData();
+            showMessage('Nickname updated successfully!', 'bg-green-600');
         };
 
-        window.manageBalance = async (type) => {
+        window.manageBalance = (type) => {
             const amountInput = document.getElementById(type === 'deposit' ? 'depositAmount' : 'withdrawAmount');
             const amount = parseFloat(amountInput.value);
             
@@ -309,7 +190,6 @@
                 return;
             }
             
-            // Use the current balance from the global state 
             const currentBalance = balance; 
 
             if (type === 'withdraw' && currentBalance < amount) {
@@ -319,8 +199,7 @@
 
             const newBalance = type === 'deposit' ? currentBalance + amount : currentBalance - amount;
             
-            // Save the new balance (onSnapshot will update the local 'balance' state)
-            await saveBalance(newBalance);
+            saveLocalData(newBalance);
             showMessage(`${type.toUpperCase()} successful! New balance: $${newBalance.toFixed(2)}`, type === 'deposit' ? 'bg-green-600' : 'bg-yellow-600');
             amountInput.value = amountInput.defaultValue || '100'; // Reset input to default/placeholder
         };
@@ -333,15 +212,13 @@
             balanceDisplay().textContent = balance.toFixed(2);
             document.getElementById('nicknameDisplay').textContent = nickname;
 
-            // Profile View Status (Simplified)
-            // Since we are ONLY anonymous, we always show the profile manager.
-            profileAuthStatus().classList.add('hidden'); // Hide the Auth Form section
-            profileManager().classList.remove('hidden'); // Show Nickname/Balance manager
+            // Profile View Status
+            profileManager().classList.remove('hidden'); 
             document.getElementById('currentNickname').textContent = nickname;
             document.getElementById('nicknameInput').value = nickname;
-            profileStatusText().textContent = `Status: Guest (Anonymous). Your progress is saved locally using a unique ID, but it may be lost if you clear your browser data or use a different device.`;
+            profileStatusText().textContent = `Status: Local Guest Session. Your progress is saved only in this browser tab using Session Storage. If you close the tab, your balance and data will be lost.`;
 
-            // **FIXED MISTAKE: Sync bet input across all inputs that share the class**
+            // Sync bet input across all inputs that share the class
             const currentBet = betInput().value;
             document.querySelectorAll('.bet-input-sync').forEach(input => {
                 // Only update the value if it's not the primary betInput itself (to avoid loop)
@@ -390,7 +267,7 @@
             } else if (view === 'wheel') {
                 updateWheelUI(true);
                 // If switching to wheel, ensure auto-loop starts
-                if (isAuthReady && !wheelGameState.isLooping) {
+                if (!wheelGameState.isLooping) {
                      wheelGameState.isLooping = true;
                      wheelGameLoop();
                 }
@@ -457,15 +334,10 @@
         
         const validateBet = () => {
             const bet = parseFloat(betInput().value);
-            if (!isAuthReady) {
-                showMessage('Authentication still loading, please wait.', 'bg-yellow-500');
-                return null;
-            }
             if (isNaN(bet) || bet <= 0) {
                 showMessage('Please enter a valid bet amount.', 'bg-yellow-500');
                 return null;
             }
-            // Use the global 'balance' state which is updated by the Firestore listener
             if (balance < bet) {
                 showMessage('Insufficient funds to place this bet. Please deposit in your profile.', 'bg-red-500');
                 return null;
@@ -590,11 +462,9 @@
             
             const winnings = minesGameState.bet * minesGameState.currentMultiplier;
             const netChange = winnings - minesGameState.bet;
-            // BUG FIX: Since the bet was already deducted in startGame, we must add the full payout (winnings) back.
-            // Original code was: const newBalance = balance + netChange;
             const newBalance = balance + winnings; 
             
-            saveBalance(newBalance);
+            saveLocalData(newBalance);
             playSound('win');
 
             showMessage(`CASHED OUT! Won $${netChange.toFixed(2)} at ${minesGameState.currentMultiplier.toFixed(2)}x`, 'bg-green-700');
@@ -707,7 +577,7 @@
             // The balance is deducted here, before the saveBalance call
             balance -= bet; 
             
-            saveBalance(balance); 
+            saveLocalData(balance); 
             updateWheelUI();
             playSound('bet', 0, color === 'green' ? 'G4' : 'D4');
             showMessage(`Bet $${bet.toFixed(2)} placed on ${color.toUpperCase()}.`, 'bg-blue-600');
@@ -766,13 +636,10 @@
                 }
             }
 
-            // **FIXED MISTAKE: Correctly calculate the final balance after deducting the initial bet(s) and adding winnings.**
-            // The initial bet was already deducted in placeWheelBet, so we just add the winnings back.
-            // Winnings is the total amount returned (bet * multiplier), netChange is the profit/loss.
             const newBalance = balance + winnings; 
             const netChange = winnings - totalBet; 
             
-            saveBalance(newBalance);
+            saveLocalData(newBalance);
             
             const isLoss = netChange < 0;
             const isWin = netChange > 0;
@@ -894,10 +761,9 @@
 
             const winnings = ballPumpGameState.bet * ballPumpGameState.currentMultiplier;
             const netChange = winnings - ballPumpGameState.bet;
-            // **FIXED MISTAKE: Only add the winnings/payout, as the original bet was already deducted.**
             const newBalance = balance + winnings; 
             
-            saveBalance(newBalance);
+            saveLocalData(newBalance);
             playSound('win');
 
             showMessage(`CASHED OUT! Won $${netChange.toFixed(2)} at ${ballPumpGameState.currentMultiplier.toFixed(2)}x!`, 'bg-green-700');
@@ -1002,10 +868,9 @@
 
             const winnings = formulaGameState.bet * formulaGameState.currentMultiplier;
             const netChange = winnings - formulaGameState.bet;
-            // **FIXED MISTAKE: Only add the winnings/payout, as the original bet was already deducted.**
             const newBalance = balance + winnings; 
             
-            saveBalance(newBalance);
+            saveLocalData(newBalance);
             playSound('win');
 
             showMessage(`PIT STOP SUCCESSFUL! Cashed out at ${formulaGameState.currentMultiplier.toFixed(2)}x! Won $${netChange.toFixed(2)}`, 'bg-green-700');
@@ -1024,7 +889,7 @@
             
             // Deduct balance and start the game
             balance -= bet;
-            saveBalance(balance);
+            saveLocalData(balance);
 
             if (gameType === 'mines') {
                 if(minesGameState.active) { showMessage('Mines game is already running.', 'bg-yellow-500'); return; }
@@ -1041,7 +906,7 @@
 
         // --- Master Initialization ---
         window.onload = () => {
-             initFirebase();
+             loadLocalData();
         };
     </script>
     <style>
@@ -1151,7 +1016,7 @@
 
     <div id="loader" class="fixed inset-0 bg-gray-900/90 flex flex-col items-center justify-center z-50">
         <h2 class="text-3xl font-extrabold text-yellow-400 mb-4 animate-pulse">Loading Casino Assets...</h2>
-        <p class="text-xl text-gray-400">Authenticating connection and setting up game tables...</p>
+        <p class="text-xl text-gray-400">Loading local game state...</p>
         <div class="mt-4 w-64 bg-gray-700 rounded-full h-3">
             <div class="h-3 bg-green-500 rounded-full w-4/5 animate-none"></div>
         </div>
@@ -1162,7 +1027,7 @@
         <header class="flex justify-between items-center pb-4 border-b border-gray-700 sticky top-0 bg-gray-900 z-10">
             <div>
                 <h1 class="text-2xl font-extrabold text-yellow-400">High-Stakes Casino</h1>
-                <p class="text-sm text-gray-400">Player: <span id="nicknameDisplay" class="font-bold text-yellow-300">Guest</span></p>
+                <p class="text-sm text-gray-400">Player: <span id="nicknameDisplay" class="font-bold text-yellow-300">Guest-Player</span></p>
             </div>
             <div class="flex items-center space-x-3">
                 <button id="muteButton" onclick="toggleMute()" class="w-10 h-10 flex items-center justify-center rounded-full bg-gray-600 hover:bg-gray-500 transition-colors">
@@ -1192,9 +1057,9 @@
 
             <div id="profileView" class="game-view hidden">
                 <div class="card space-y-6">
-                    <h2 class="text-3xl font-extrabold text-blue-400 border-b border-gray-700 pb-3">Player Profile (Guest Mode)</h2>
+                    <h2 class="text-3xl font-extrabold text-blue-400 border-b border-gray-700 pb-3">Player Profile (Local Session)</h2>
                     
-                    <p id="profileStatusText" class="text-lg font-medium text-gray-300">Status: Guest (Anonymous). Your progress is saved locally using a unique ID, but it may be lost if you clear your browser data or use a different device.</p>
+                    <p id="profileStatusText" class="text-lg font-medium text-gray-300">Status: Local Guest Session. Your progress is saved only in this browser tab using Session Storage. If you close the tab, your balance and data will be lost.</p>
 
                     <div id="profileManager" class="space-y-6">
                         
@@ -1226,14 +1091,10 @@
                         </div>
                         
                         <div class="pt-4 border-t border-gray-700">
-                             <button onclick="signOutUser()" class="btn btn-red">Start New Guest Session</button>
-                             <p class="text-xs text-gray-500 mt-1">This will generate a new unique ID and reset your balance to $1000.</p>
+                             <button onclick="startNewGuestSession()" class="btn btn-red">Reset Game Data / New Session</button>
+                             <p class="text-xs text-gray-500 mt-1">This will clear your Session Storage and reset your balance to $1000.</p>
                         </div>
                     </div>
-
-                    <div id="profileAuthStatus" class="space-y-4 hidden">
-                        </div>
-
                 </div>
             </div>
 
