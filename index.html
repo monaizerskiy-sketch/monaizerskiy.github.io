@@ -4,10 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>The Ascent: From Zero to Mogul</title>
-    <!-- PWA Metadata for installation and display -->
+    <!-- PWA Metadata -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0f172a">
-    <!-- The manifest link is initially a placeholder and will be set by JS below -->
     <link rel="manifest" id="manifest-link" href="#">
     
     <!-- Load Tailwind CSS -->
@@ -76,6 +75,21 @@
             color: var(--text-light);
             font-weight: 600;
         }
+        /* Toast Animations */
+        @keyframes slide-in-up {
+            from { transform: translate(-50%, 100px); opacity: 0; }
+            to { transform: translate(-50%, 0); opacity: 1; }
+        }
+        @keyframes slide-out-down {
+            from { transform: translate(-50%, 0); opacity: 1; }
+            to { transform: translate(-50%, 100px); opacity: 0; }
+        }
+        .animate-slide-in-up {
+            animation: slide-in-up 0.3s ease-out forwards;
+        }
+        .animate-slide-out-down {
+            animation: slide-out-down 0.5s ease-in forwards;
+        }
     </style>
     <!-- Configuration for Tailwind to use custom colors -->
     <script>
@@ -100,9 +114,20 @@
         import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- PWA Setup Logic (START) ---
+        // --- GLOBAL ENVIRONMENT SETUP ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        setLogLevel('debug'); // Enable Firestore logging
+
+        let app, db, auth;
+        let userId = null;
+        let isGameReady = false; // Controls if game loop is running
+        let isCloudLoaded = false; // Controls if initial cloud data has been merged
+        let gameLoopInterval = null;
+
+        // --- PWA Setup Logic ---
         const setupPWA = () => {
-            // 1. Define the Web App Manifest content
             const manifestData = {
                 name: "The Ascent: Mogul",
                 short_name: "The Ascent",
@@ -112,64 +137,29 @@
                 background_color: "#0f172a",
                 theme_color: "#4f46e5",
                 icons: [
-                    // Using generic icon definitions, though actual image files are not generated
                     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
                     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
                 ]
             };
-
-            // 2. Dynamically create the manifest file using a Blob
             const manifestBlob = new Blob([JSON.stringify(manifestData)], { type: 'application/json' });
             const manifestUrl = URL.createObjectURL(manifestBlob);
             document.getElementById('manifest-link').href = manifestUrl;
 
-            // 3. Define the Service Worker script (minimal for PWA installation)
-            // A simple pass-through service worker is used here. 
-            // Full offline caching of external CDNs is unreliable in this environment.
             const swCode = `
-                self.addEventListener('install', (event) => {
-                    console.log('Service Worker installed.');
-                    self.skipWaiting();
-                });
-                
-                self.addEventListener('activate', (event) => {
-                    console.log('Service Worker activated.');
-                    event.waitUntil(clients.claim());
-                });
-
-                self.addEventListener('fetch', (event) => {
-                    // Let the browser handle network requests (pass-through)
-                    event.respondWith(fetch(event.request));
-                });
+                self.addEventListener('install', (event) => { self.skipWaiting(); });
+                self.addEventListener('activate', (event) => { event.waitUntil(clients.claim()); });
+                self.addEventListener('fetch', (event) => { event.respondWith(fetch(event.request)); });
             `;
             
-            // 4. Register the Service Worker
             if ('serviceWorker' in navigator) {
                 const swBlob = new Blob([swCode], { type: 'application/javascript' });
                 const swUrl = URL.createObjectURL(swBlob);
-
                 navigator.serviceWorker.register(swUrl, { scope: './' })
-                    .then(reg => console.log('Service Worker registered successfully!', reg))
                     .catch(err => console.error('Service Worker registration failed:', err));
             }
         };
-        // --- PWA Setup Logic (END) ---
-
-
-        // IMPORTANT: Global variables are automatically provided by the environment.
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-        // Set log level for debugging
-        setLogLevel('debug');
-
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
 
         // --- Game Data Definitions (UNCHANGED) ---
-
         const EDUCATION_TIERS = [
             { id: 'None', name: 'None', cost: 0, studyTimeSec: 0 },
             { id: 'Diploma', name: 'High School Diploma', cost: 100, studyTimeSec: 10 },
@@ -177,7 +167,6 @@
             { id: 'Bachelor', name: 'Bachelor\'s Degree', cost: 50000, studyTimeSec: 180 },
             { id: 'Master', name: 'Master\'s Degree (MBA)', cost: 250000, studyTimeSec: 300 },
         ];
-
         const JOB_TIERS = [
             { id: 'Unemployed', name: 'Unemployed', requiredEducation: 'None', salary: 0, icon: '🛑' },
             { id: 'Janitor', name: 'Janitor', requiredEducation: 'None', salary: 1, icon: '🧹' },
@@ -186,7 +175,6 @@
             { id: 'CFO', name: 'CFO (Chief Financial Officer)', requiredEducation: 'Bachelor', salary: 100, icon: '📈' },
             { id: 'Director', name: 'Company Director', requiredEducation: 'Master', salary: 500, icon: '👑' },
         ];
-
         const HUSTLE_UPGRADES = [
             { id: 'mouse', name: 'Ergonomic Mouse', cost: 50, clickBoost: 2, autoBoost: 0 },
             { id: 'chair', name: 'Better Office Chair', cost: 250, clickBoost: 5, autoBoost: 0 },
@@ -194,7 +182,6 @@
             { id: 'pc', name: 'Gaming PC Setup', cost: 5000, clickBoost: 15, autoBoost: 0 },
             { id: 'autov2', name: 'Auto-Clicker V2 (Advanced Bot)', cost: 50000, clickBoost: 0, autoBoost: 5 },
         ];
-
         const REAL_ESTATE_ASSETS = [
             { id: 'box', name: 'Cardboard Box', cost: 10, income: 0, icon: '📦' },
             { id: 'studio', name: 'Studio Apartment', cost: 2000, income: 5, icon: '🏠' },
@@ -202,8 +189,7 @@
             { id: 'penthouse', name: 'Luxury Penthouse', cost: 500000, income: 300, icon: '🏙️' },
             { id: 'island', name: 'Private Island', cost: 10000000, income: 5000, icon: '🏝️' },
         ];
-
-        const GAME_TICK_SECONDS = 5; // Passive income and salary update interval
+        const GAME_TICK_SECONDS = 5;
         const ONE_SECOND_MS = 1000;
 
         const defaultState = {
@@ -213,21 +199,15 @@
             jobId: 'Unemployed',
             clickValue: 1,
             autoClickRate: 0,
-            assets: [], // { id: 'studio', count: 1 }
-            upgrades: [], // { id: 'mouse' }
-            studyEndTime: 0, // Timestamp when studying is complete (0 if not studying)
+            assets: [],
+            upgrades: [],
+            studyEndTime: 0,
             lastSaveTime: Date.now(),
         };
 
         let gameState = { ...defaultState };
-        let userId = null;
-        let isAuthReady = false;
-        let isGameReady = false;
-        let gameLoopInterval = null;
 
         // --- Utility Functions (UNCHANGED) ---
-
-        /** Formats a number to a clean currency string. */
         const formatMoney = (amount) => {
             return new Intl.NumberFormat('en-US', {
                 style: 'currency',
@@ -235,20 +215,14 @@
                 minimumFractionDigits: 0
             }).format(amount);
         };
-
-        /** Finds the current job object. */
         const getCurrentJob = () => JOB_TIERS.find(job => job.id === gameState.jobId) || JOB_TIERS[0];
-        
-        /** Finds the current education object. */
         const getCurrentEducation = () => EDUCATION_TIERS.find(edu => edu.id === gameState.educationLevel) || EDUCATION_TIERS[0];
-        
-        /** Finds an education tier by its ID. */
         const getEducationById = (id) => EDUCATION_TIERS.find(edu => edu.id === id);
-
-        /** Finds the index of a given education tier in the array. */
         const getEducationIndex = (id) => EDUCATION_TIERS.findIndex(edu => edu.id === id);
-
-        /** Calculates Net Worth (Cash + Asset Value) */
+        const getNextEducationTier = () => {
+            const currentIdx = getEducationIndex(gameState.educationLevel);
+            return EDUCATION_TIERS[currentIdx + 1] || null;
+        };
         const calculateNetWorth = () => {
             const assetValue = gameState.assets.reduce((sum, asset) => {
                 const item = REAL_ESTATE_ASSETS.find(a => a.id === asset.id);
@@ -259,12 +233,11 @@
 
         /** Updates the calculated state values and ensures persistence. */
         const updateGameCalculations = () => {
-            // Recalculate Net Worth
             gameState.netWorth = calculateNetWorth();
 
             // Recalculate total click value and auto-rate from upgrades
-            gameState.clickValue = 1; // Start at base
-            gameState.autoClickRate = 0; // Start at base
+            gameState.clickValue = 1;
+            gameState.autoClickRate = 0;
 
             gameState.upgrades.forEach(upgradeId => {
                 const upgrade = HUSTLE_UPGRADES.find(u => u.id === upgradeId);
@@ -278,72 +251,20 @@
             renderUI();
         };
 
-        // --- Firebase Persistence (UNCHANGED) ---
+        /** Gets the total money earned per tick from passive sources (Salary + Assets). */
+        const getPassiveIncomePerTick = () => {
+            const currentJob = getCurrentJob();
+            let totalIncome = currentJob.salary;
+            
+            totalIncome += gameState.assets.reduce((sum, asset) => {
+                const item = REAL_ESTATE_ASSETS.find(a => a.id === asset.id);
+                return sum + (item ? item.income * asset.count : 0);
+            }, 0);
 
-        /** Gets the Firestore document reference for the current user's save file. */
-        const getSaveRef = () => {
-            if (!userId) {
-                console.error("User ID not available for saving.");
-                return null;
-            }
-            // Private data path: /artifacts/{appId}/users/{userId}/game_data/main_save
-            const docPath = `/artifacts/${appId}/users/${userId}/game_data/main_save`;
-            return doc(db, docPath);
-        };
+            totalIncome += gameState.autoClickRate * GAME_TICK_SECONDS;
+            return totalIncome;
+        }
 
-        /** Saves the current game state to Firestore. */
-        const saveGame = async () => {
-            if (!isGameReady || !userId) return;
-            const saveRef = getSaveRef();
-            if (saveRef) {
-                try {
-                    gameState.lastSaveTime = Date.now();
-                    await setDoc(saveRef, gameState);
-                    // console.log(`Game saved successfully at ${new Date(gameState.lastSaveTime).toLocaleTimeString()}`);
-                } catch (error) {
-                    console.error("Error saving game:", error);
-                }
-            }
-        };
-
-        /** Loads the game state from Firestore using a real-time listener. */
-        const loadGame = () => {
-            const saveRef = getSaveRef();
-            if (saveRef) {
-                onSnapshot(saveRef, (docSnap) => {
-                    // This listener may fire before the game loop starts as a safety measure, 
-                    // but usually fires after the game loop has started.
-                    
-                    if (docSnap.exists()) {
-                        const loadedState = docSnap.data();
-                        
-                        // 1. Merge or replace state
-                        Object.assign(gameState, { ...defaultState, ...loadedState });
-                        
-                        // 2. Handle offline income 
-                        const timeElapsed = Date.now() - gameState.lastSaveTime;
-                        const ticksMissed = Math.floor(timeElapsed / (GAME_TICK_SECONDS * ONE_SECOND_MS));
-                        if (ticksMissed > 0) {
-                            processOfflineIncome(ticksMissed);
-                        }
-
-                        console.log("Cloud save loaded/updated in real-time.");
-                        showToast('Cloud save loaded.');
-
-                    } else {
-                        console.log("No save data found. Using current default/local state.");
-                    }
-                    
-                    // Always update UI after loading/merging data
-                    updateGameCalculations();
-                }, (error) => {
-                    console.error("Error listening to game state:", error);
-                });
-            }
-        };
-        
-        // --- Core Game Logic (UNCHANGED) ---
-        
         /** Processes income that was missed while the app was closed. */
         const processOfflineIncome = (ticksMissed) => {
             if (ticksMissed > 0) {
@@ -354,25 +275,69 @@
                 showToast(`💰 Welcome back! Earned ${formatMoney(totalOfflineIncome)} offline over ${ticksMissed} intervals.`);
             }
         };
+        
+        // --- Firebase Persistence ---
+        const getSaveRef = () => {
+            if (!userId || !db) return null;
+            // Private data path: /artifacts/{appId}/users/{userId}/game_data/main_save
+            const docPath = `/artifacts/${appId}/users/${userId}/game_data/main_save`;
+            return doc(db, docPath);
+        };
 
-        /** Gets the total money earned per tick from passive sources (Salary + Assets). */
-        const getPassiveIncomePerTick = () => {
-            const currentJob = getCurrentJob();
-            let totalIncome = currentJob.salary; // Job Salary
-            
-            // Asset Income
-            totalIncome += gameState.assets.reduce((sum, asset) => {
-                const item = REAL_ESTATE_ASSETS.find(a => a.id === asset.id);
-                return sum + (item ? item.income * asset.count : 0);
-            }, 0);
+        const saveGame = async () => {
+            if (!isGameReady || !userId || !db) return;
+            const saveRef = getSaveRef();
+            if (saveRef) {
+                try {
+                    gameState.lastSaveTime = Date.now();
+                    await setDoc(saveRef, gameState);
+                } catch (error) {
+                    console.error("Error saving game:", error);
+                }
+            }
+        };
 
-            // Auto-clicker income (Convert per second to per tick)
-            totalIncome += gameState.autoClickRate * GAME_TICK_SECONDS;
-
-            return totalIncome;
-        }
-
-        /** The main game loop function, called every GAME_TICK_SECONDS. */
+        /** Loads and syncs the game state from Firestore using a real-time listener. */
+        const loadGame = () => {
+            const saveRef = getSaveRef();
+            if (saveRef) {
+                onSnapshot(saveRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const loadedState = docSnap.data();
+                        
+                        // Merge loaded data with current running state
+                        Object.assign(gameState, { ...defaultState, ...loadedState });
+                        
+                        // Only calculate offline income on the *first* load
+                        if (!isCloudLoaded) {
+                            const timeElapsed = Date.now() - gameState.lastSaveTime;
+                            const ticksMissed = Math.floor(timeElapsed / (GAME_TICK_SECONDS * ONE_SECOND_MS));
+                            processOfflineIncome(ticksMissed);
+                            isCloudLoaded = true;
+                            showToast('Cloud save loaded successfully.');
+                        } else {
+                             // Subsequent updates are just syncing (no offline earnings calc needed)
+                            showToast('Game state synced from cloud.');
+                        }
+                    } else {
+                        // If no save data exists, we save the current default/local state
+                        if (!isCloudLoaded) {
+                            showToast('No cloud save found. Starting a new game.');
+                            saveGame();
+                            isCloudLoaded = true;
+                        }
+                    }
+                    
+                    updateGameCalculations();
+                }, (error) => {
+                    console.error("Error listening to game state:", error);
+                    // Inform the user that cloud sync failed
+                    showToast('Error syncing cloud data. Playing locally.');
+                });
+            }
+        };
+        
+        // --- Core Game Logic ---
         const gameLoop = () => {
             // 1. Check if studying is complete
             if (gameState.studyEndTime > 0 && Date.now() >= gameState.studyEndTime) {
@@ -389,26 +354,31 @@
             // 3. Update calculations and UI
             updateGameCalculations();
             
-            // 4. Auto-save (only if user ID is available)
+            // 4. Auto-save
             saveGame();
         };
 
-        /** Starts the main game loop and sets the ready flag immediately. */
+        /** Starts the main game loop and shows the UI immediately. */
         const startGameLoop = () => {
-            if (isGameReady) return; // Already running
+            if (isGameReady) return;
             
-            // 1. Initial render and loop setup
-            updateGameCalculations();
+            // Set the interval and flag
             gameLoopInterval = setInterval(gameLoop, GAME_TICK_SECONDS * ONE_SECOND_MS);
-            
-            // 2. Mark as ready and hide loading screen immediately to avoid delay
             isGameReady = true;
+
+            // Remove the loading state IMMEDIATELY (addresses user's primary concern)
             document.getElementById('loading-state').classList.add('hidden');
             document.getElementById('app-content').classList.remove('hidden');
-            showToast('Game started!');
+            
+            // Initial render using default state
+            updateGameCalculations();
+            
+            // Set up initial tab view
+            changeTab(currentTab);
+
+            console.log("Game loop started immediately with default state.");
         };
-        
-        /** Executes a player tap/click. */
+
         const handleTap = () => {
             if (gameState.studyEndTime > 0) {
                 showToast('You must finish studying before you can hustle!');
@@ -416,10 +386,9 @@
             }
             gameState.cash += gameState.clickValue;
             updateGameCalculations();
-            saveGame(); // Also save on manual action
+            saveGame();
         };
         
-        /** Purchases an item (Hustle Upgrade, Education, Real Estate, etc.). */
         const purchaseItem = (type, itemId, cost) => {
             if (gameState.cash < cost) {
                 showToast("Not enough cash!");
@@ -437,8 +406,7 @@
                     const edu = getEducationById(itemId);
                     gameState.studyEndTime = Date.now() + edu.studyTimeSec * ONE_SECOND_MS;
                     showToast(`📚 Enrolled in ${edu.name}! Studying will take ${edu.studyTimeSec} seconds...`);
-                    // Reset job to unemployed when studying
-                    gameState.jobId = 'Unemployed';
+                    gameState.jobId = 'Unemployed'; // Resets job when studying
                     break;
                 case 'job':
                     gameState.jobId = itemId;
@@ -458,69 +426,47 @@
             updateGameCalculations();
             saveGame();
         };
-        
-        /** Returns the next education tier to unlock. */
-        const getNextEducationTier = () => {
-            const currentIdx = getEducationIndex(gameState.educationLevel);
-            return EDUCATION_TIERS[currentIdx + 1] || null;
-        };
 
         // --- UI Rendering (UNCHANGED) ---
-        
         let currentTab = 'Dashboard';
-
-        /** Changes the active tab and re-renders the content. */
         const changeTab = (tab) => {
             currentTab = tab;
-            const tabButtons = document.querySelectorAll('.tab-button');
-            tabButtons.forEach(btn => {
+            document.querySelectorAll('.tab-button').forEach(btn => {
                 btn.classList.toggle('tab-active', btn.dataset.tab === tab);
             });
             renderContent();
-            // Scroll to top of content area on tab change for mobile usability
             document.getElementById('content-area').scrollTop = 0;
         };
         
-        /** Renders the main UI (stats, tabs, content). */
         const renderUI = () => {
             // Update Stats Display
             document.getElementById('cash-value').textContent = formatMoney(gameState.cash);
             document.getElementById('networth-value').textContent = formatMoney(gameState.netWorth);
             document.getElementById('passive-value').textContent = formatMoney(getPassiveIncomePerTick()) + ` / ${GAME_TICK_SECONDS}s`;
             document.getElementById('click-value').textContent = formatMoney(gameState.clickValue) + ' per Tap';
-            document.getElementById('user-id').textContent = userId || 'Loading User...';
+            document.getElementById('user-id').textContent = userId || (auth ? 'Connecting...' : 'Initializing...');
 
-            renderContent(); // Re-render the active tab content
+            renderContent();
         };
 
-        /** Renders the content of the currently active tab. */
         const renderContent = () => {
             const contentArea = document.getElementById('content-area');
-            contentArea.innerHTML = ''; // Clear previous content
+            contentArea.innerHTML = '';
 
             switch (currentTab) {
-                case 'Dashboard':
-                    renderDashboard(contentArea);
-                    break;
-                case 'Career':
-                    renderCareer(contentArea);
-                    break;
-                case 'Assets':
-                    renderAssets(contentArea);
-                    break;
-                case 'Hustle':
-                    renderHustle(contentArea);
-                    break;
+                case 'Dashboard': renderDashboard(contentArea); break;
+                case 'Career': renderCareer(contentArea); break;
+                case 'Assets': renderAssets(contentArea); break;
+                case 'Hustle': renderHustle(contentArea); break;
             }
         };
 
+        // Note: renderDashboard, renderCareer, renderAssets, renderHustle functions are kept exactly the same for brevity, 
+        // as they handle the dynamic HTML generation based on the current 'gameState'.
         const renderDashboard = (container) => {
             const currentJob = getCurrentJob();
-            const jobIcon = currentJob.icon;
-            
             let studyStatus = '';
             let isStudying = gameState.studyEndTime > 0;
-
             if (isStudying) {
                 const remainingSec = Math.max(0, Math.floor((gameState.studyEndTime - Date.now()) / ONE_SECOND_MS));
                 const nextEdu = getNextEducationTier();
@@ -532,34 +478,21 @@
                         <p class="text-sm">Time Remaining: ${minutes}m ${seconds}s</p>
                     </div>
                 `;
-                // Re-render dashboard every second while studying
                 if (isStudying) { setTimeout(() => renderContent(), ONE_SECOND_MS); }
             }
-
             container.innerHTML = `
                 <div class="p-4">
                     <h2 class="text-2xl font-bold mb-4 text-primary">Status Overview</h2>
-                    
                     ${studyStatus}
-
-                    <!-- Current Position -->
                     <div class="stat-card p-4 rounded-xl mb-4">
                         <p class="text-sm text-gray-400">Current Position</p>
-                        <p class="text-3xl font-extrabold flex items-center">
-                            ${jobIcon} ${currentJob.name}
-                        </p>
+                        <p class="text-3xl font-extrabold flex items-center">${currentJob.icon} ${currentJob.name}</p>
                         <p class="text-lg text-accent-green mt-1">Salary: ${formatMoney(currentJob.salary)} / ${GAME_TICK_SECONDS}s</p>
                     </div>
-
-                    <!-- Education Level -->
                     <div class="stat-card p-4 rounded-xl mb-4">
                         <p class="text-sm text-gray-400">Highest Education</p>
-                        <p class="text-3xl font-extrabold flex items-center">
-                            🎓 ${getCurrentEducation().name}
-                        </p>
+                        <p class="text-3xl font-extrabold flex items-center">🎓 ${getCurrentEducation().name}</p>
                     </div>
-
-                    <!-- Asset Summary -->
                     <div class="stat-card p-4 rounded-xl mb-4">
                         <p class="text-sm text-gray-400">Real Estate Owned</p>
                         ${gameState.assets.length === 0 
@@ -570,7 +503,6 @@
                             }).join('')
                         }
                     </div>
-
                     <p class="text-sm text-gray-500 pt-2 text-center">Game saves automatically every ${GAME_TICK_SECONDS} seconds.</p>
                 </div>
             `;
@@ -579,19 +511,14 @@
         const renderCareer = (container) => {
             const currentEduIdx = getEducationIndex(gameState.educationLevel);
             const isStudying = gameState.studyEndTime > 0;
-            
             let html = '<div class="p-4">';
             html += `<h2 class="text-2xl font-bold mb-4 text-primary">Career Advancement</h2>`;
-            
-            // --- Education Section ---
             html += `<h3 class="text-xl font-semibold mb-3 text-gray-200 border-b border-gray-700 pb-2">1. Education Track</h3>`;
             const nextEdu = getNextEducationTier();
-            
             if (nextEdu) {
                 const isAffordable = gameState.cash >= nextEdu.cost;
                 const buttonClass = isAffordable && !isStudying ? 'btn-primary' : 'btn-secondary btn-disabled';
                 const buttonText = isStudying ? 'STUDY IN PROGRESS' : isAffordable ? `Enroll Now (${formatMoney(nextEdu.cost)})` : 'Too Expensive';
-
                 html += `
                     <div class="stat-card p-4 rounded-xl mb-4">
                         <p class="text-xl font-bold">Next Goal: ${nextEdu.name}</p>
@@ -603,22 +530,15 @@
                         </button>
                     </div>
                 `;
-            } else {
-                html += `<p class="p-4 bg-green-900/30 rounded-lg">🎓 Maximum Education Achieved!</p>`;
-            }
-
-            // --- Job Section ---
+            } else { html += `<p class="p-4 bg-green-900/30 rounded-lg">🎓 Maximum Education Achieved!</p>`; }
             html += `<h3 class="text-xl font-semibold mt-6 mb-3 text-gray-200 border-b border-gray-700 pb-2">2. Corporate Ladder</h3>`;
-            
             JOB_TIERS.forEach(job => {
-                if (job.id === gameState.jobId) return; // Skip current job
-                
+                if (job.id === gameState.jobId) return;
                 const requiredEduIdx = getEducationIndex(job.requiredEducation);
                 const canApply = currentEduIdx >= requiredEduIdx;
                 const buttonClass = canApply ? 'btn-primary' : 'btn-secondary btn-disabled';
                 const requiredEduName = getEducationById(job.requiredEducation).name;
                 const buttonText = canApply ? `APPLY (${formatMoney(job.salary)}/tick)` : `Requires: ${requiredEduName}`;
-
                 html += `
                     <div class="stat-card p-4 rounded-xl mb-3 flex justify-between items-center">
                         <div>
@@ -633,7 +553,6 @@
                     </div>
                 `;
             });
-            
             html += '</div>';
             container.innerHTML = html;
         };
@@ -642,13 +561,11 @@
             let html = '<div class="p-4">';
             html += `<h2 class="text-2xl font-bold mb-4 text-primary">Assets & Investments</h2>`;
             html += `<p class="text-sm text-gray-400 mb-4">Buy Real Estate for long-term passive income and increased Net Worth.</p>`;
-
             REAL_ESTATE_ASSETS.forEach(asset => {
                 const isAffordable = gameState.cash >= asset.cost;
                 const buttonClass = isAffordable ? 'btn-primary' : 'btn-secondary btn-disabled';
                 const buttonText = isAffordable ? `BUY (${formatMoney(asset.cost)})` : 'Too Expensive';
                 const ownedCount = (gameState.assets.find(a => a.id === asset.id) || { count: 0 }).count;
-
                 html += `
                     <div class="stat-card p-4 rounded-xl mb-3">
                         <div class="flex justify-between items-start">
@@ -666,7 +583,6 @@
                     </div>
                 `;
             });
-            
             html += '</div>';
             container.innerHTML = html;
         };
@@ -675,7 +591,6 @@
             let html = '<div class="p-4">';
             html += `<h2 class="text-2xl font-bold mb-4 text-primary">The Hustle (Equipment)</h2>`;
             html += `<p class="text-sm text-gray-400 mb-4">Upgrade your equipment to increase your Click Value and your passive Auto-Clicker rate.</p>`;
-
             HUSTLE_UPGRADES.forEach(upgrade => {
                 const isPurchased = gameState.upgrades.includes(upgrade.id);
                 const isAffordable = gameState.cash >= upgrade.cost;
@@ -685,7 +600,6 @@
                 let stats = [];
                 if (upgrade.clickBoost > 0) stats.push(`+${formatMoney(upgrade.clickBoost)} Click Value`);
                 if (upgrade.autoBoost > 0) stats.push(`+${formatMoney(upgrade.autoBoost)} Auto/sec`);
-
                 html += `
                     <div class="stat-card p-4 rounded-xl mb-3">
                         <div class="flex justify-between items-start">
@@ -702,16 +616,15 @@
                     </div>
                 `;
             });
-            
             html += '</div>';
             container.innerHTML = html;
         };
-        
-        /** Shows a temporary success/notification message. */
+
         const showToast = (message) => {
             const toast = document.getElementById('toast');
+            // Ensure any previous slide-out animation is cleared before showing new toast
+            toast.classList.remove('hidden', 'animate-slide-out-down');
             toast.textContent = message;
-            toast.classList.remove('hidden');
             toast.classList.add('animate-slide-in-up');
             
             setTimeout(() => {
@@ -720,71 +633,72 @@
                 setTimeout(() => {
                     toast.classList.add('hidden');
                     toast.classList.remove('animate-slide-out-down');
-                }, 500); // Wait for slide out animation
-            }, 3000); // Duration before starting slide out
+                }, 500);
+            }, 3000);
         };
 
-        // --- Initialization and Authentication (MODIFIED FOR FAST LOAD) ---
+        // --- Initialization and Authentication (Optimized) ---
 
-        /** Main function to set up authentication and game listeners. */
-        const initApp = () => {
-            // 1. Core game starts immediately with default state to prevent perceived delay.
-            startGameLoop(); 
+        /** Initializes Firebase and handles authentication. This runs asynchronously after the game loop starts. */
+        const initAuthAndCloud = () => {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+            } catch(e) {
+                console.error("Firebase Initialization Error:", e);
+                document.getElementById('loading-message').textContent = "Initialization Failed. Playing in Offline Mode.";
+                return;
+            }
 
-            // IMPORTANT: Call PWA setup immediately
-            setupPWA();
-            
-            // 2. Start Firebase Authentication Process
-            onAuthStateChanged(auth, async (user) => {
+            // Authentication listener: This sets the userId and triggers the cloud load process.
+            onAuthStateChanged(auth, (user) => {
                 if (user) {
                     userId = user.uid;
-                } else {
-                    // Sign in anonymously if no user is found
-                    await signInAnonymously(auth);
-                    // The onAuthStateChanged listener will fire again with the anonymous user.
-                    return; 
-                }
-                
-                if (!isAuthReady) {
-                    isAuthReady = true;
                     document.getElementById('user-id').textContent = userId;
-                    console.log("Authentication ready. User ID:", userId);
-                    // 3. Once authenticated, start the cloud data load process (asynchronously).
+                    document.getElementById('loading-message').textContent = "Connected. Syncing cloud data...";
+                    // Start cloud data sync once authenticated
                     loadGame(); 
+                } else {
+                    // This handles initial sign-in attempt failures or sign-out
+                    console.log("User not authenticated. Falling back to Anonymous Sign-In.");
+                    signInAnonymously(auth).catch(e => {
+                        console.error("Anonymous Sign-in failed:", e);
+                        document.getElementById('loading-message').textContent = "Cloud connection unavailable.";
+                    });
                 }
             });
 
-            // Attempt to sign in with custom token if available (Canvas environment)
+            // Attempt initial sign-in using the provided custom token or fall back to anonymous
             if (initialAuthToken) {
-                try {
-                    // Try to sign in with custom token
-                    signInWithCustomToken(auth, initialAuthToken).catch(e => {
-                        console.error("Error signing in with custom token, falling back to anonymous:", e);
-                        signInAnonymously(auth);
-                    });
-                } catch (error) {
-                     // Catch synchronous errors here, though it's less common
-                    console.error("Synchronous error during custom token sign-in:", error);
-                    signInAnonymously(auth);
-                }
+                signInWithCustomToken(auth, initialAuthToken).catch(e => {
+                    console.error("Custom Token Sign-in failed. Retrying anonymously.", e);
+                    // The onAuthStateChanged listener will handle the anonymous fallback
+                });
             } else {
-                // If token is not provided, sign in anonymously immediately
-                signInAnonymously(auth).catch(e => console.error("Anonymous sign-in failed:", e));
+                signInAnonymously(auth).catch(e => {
+                    console.error("Anonymous Sign-in failed:", e);
+                });
             }
-            
-            // Set up initial tab view
-            changeTab(currentTab);
         };
+        
+        // --- Main Entry Point ---
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // 1. PWA Setup
+            setupPWA();
+            
+            // 2. Start the game loop IMMEDIATELY with default data (eliminates perceived delay)
+            startGameLoop(); 
+
+            // 3. Start the long-running async authentication and cloud data process
+            initAuthAndCloud();
+        });
         
         // Expose functions globally for HTML event handlers
         window.handleTap = handleTap;
         window.purchaseItem = purchaseItem;
         window.changeTab = changeTab;
-        window.getPassiveIncomePerTick = getPassiveIncomePerTick;
-        window.formatMoney = formatMoney;
-
-        // Start the application initialization when the DOM is ready
-        document.addEventListener('DOMContentLoaded', initApp);
     </script>
 
     <!-- Main Application UI -->
@@ -795,8 +709,8 @@
             <h1 class="text-2xl font-extrabold text-center text-primary mb-2">The Ascent</h1>
             <div class="grid grid-cols-2 gap-3">
                 
-                <!-- Cash Stat -->
-                <div class="stat-card p-3 rounded-xl text-center" onclick="handleTap()">
+                <!-- Cash Stat (Tap Target) -->
+                <div class="stat-card p-3 rounded-xl text-center" ontouchstart="handleTap()" onclick="handleTap()">
                     <p class="text-xs text-gray-400">Cash (Tap Me!)</p>
                     <p id="cash-value" class="text-xl font-bold text-accent-green">$10</p>
                 </div>
@@ -819,7 +733,7 @@
                     <p id="click-value" class="text-lg font-semibold text-primary">$1 per Tap</p>
                 </div>
             </div>
-            <p class="text-xs text-center text-gray-500 mt-2">User: <span id="user-id">Loading...</span></p>
+            <p class="text-xs text-center text-gray-500 mt-2">User ID: <span id="user-id">Initializing...</span></p>
         </header>
 
         <!-- Tab Navigation -->
@@ -832,46 +746,26 @@
             </div>
         </nav>
 
-        <!-- Loading State -->
+        <!-- Loading State (Temporary, quickly hidden) -->
         <div id="loading-state" class="flex flex-col items-center justify-center p-8 mt-12">
             <svg class="animate-spin h-8 w-8 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <p class="mt-4 text-gray-400">Loading game state...</p>
-            <p class="mt-2 text-sm text-gray-500">Authenticating and fetching save data from the cloud.</p>
+            <p id="loading-message" class="mt-4 text-gray-400">Starting game instantly...</p>
         </div>
 
-        <!-- Main Content Area -->
+        <!-- Main Content Area (Hidden until game loop starts) -->
         <main id="app-content" class="w-full flex-grow overflow-y-auto hidden">
             <div id="content-area" class="pb-20">
                 <!-- Content will be rendered here by JavaScript -->
             </div>
         </main>
         
-        <!-- Toast Notification (Modal replacement) -->
+        <!-- Toast Notification (for user feedback) -->
         <div id="toast" class="hidden fixed bottom-0 left-1/2 transform -translate-x-1/2 mb-4 p-3 bg-gray-700 text-white text-sm rounded-lg shadow-2xl z-50 transition-all duration-300" style="min-width: 80%;">
             Notification Message
         </div>
-        
-        <!-- CSS for the toast animation -->
-        <style>
-            @keyframes slide-in-up {
-                from { transform: translate(-50%, 100px); opacity: 0; }
-                to { transform: translate(-50%, 0); opacity: 1; }
-            }
-            @keyframes slide-out-down {
-                from { transform: translate(-50%, 0); opacity: 1; }
-                to { transform: translate(-50%, 100px); opacity: 0; }
-            }
-            .animate-slide-in-up {
-                animation: slide-in-up 0.3s ease-out forwards;
-            }
-            .animate-slide-out-down {
-                animation: slide-out-down 0.5s ease-in forwards;
-            }
-        </style>
-
     </div>
 </body>
 </html>
