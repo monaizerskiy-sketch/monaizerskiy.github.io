@@ -1,12 +1,238 @@
-// ... (omitted unchanged imports and state variables)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>High-Stakes Multiplier Casino (Anonymous)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+    <script type="module">
+        // --- Firebase Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged, 
+            signOut,
+            updateProfile 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        setLogLevel('debug');
+
+        // Global Firebase variables (provided by the environment)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'high-stakes-casino-v7';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let db;
         let auth;
         let userId = null;
-        let balance = 1000.00; // Correctly starts at 1000.00
-// ... (omitted unchanged game states and UI elements)
+        let balance = 1000.00;
+        let isAuthReady = false;
+        let currentView = 'mines'; 
+        let nickname = 'Guest'; 
 
-        // --- Firebase Initialization and Authentication (omitted unchanged functions: initFirebase, loadUserData) ---
+        // --- Game States & Audio (Unchanged) ---
+        let betAmount = 10;
+        let sfx = {};
+        let isMuted = false;
+        let audioContextStarted = false;
+        
+        // Multipliers for Mines Game 
+        const MINES_MULTIPLIERS = {
+            3: [1.05, 1.10, 1.16, 1.22, 1.29, 1.37, 1.46, 1.55, 1.65, 1.76, 1.88, 2.02, 2.17, 2.33, 2.51, 2.71, 2.94, 3.20, 3.49, 3.82, 4.21, 4.67, 5.23, 5.92, 6.78, 7.91, 9.47, 11.75, 15.42, 22.03, 35.25, 68.27, 187.75, 876.13, 8761.3], 
+            5: [1.08, 1.18, 1.30, 1.45, 1.62, 1.83, 2.07, 2.37, 2.73, 3.18, 3.74, 4.45, 5.38, 6.64, 8.41, 10.95, 14.85, 21.0, 31.5, 50.4, 86.8, 169.8, 373.6, 996.3, 3487.1, 17435.5, 139484.0, 1673808.0],
+            9: [1.15, 1.35, 1.62, 2.00, 2.50, 3.23, 4.30, 5.92, 8.44, 12.50, 19.44, 31.67, 54.78, 100.0, 194.5, 407.7, 951.3, 2536.8, 8878.8, 44394.0, 310758.0, 3107580.0, 49721280.0, 1243032000.0],
+            15: [1.25, 1.58, 2.05, 2.75, 3.80, 5.43, 8.15, 12.92, 22.45, 42.75, 90.00, 213.3, 576.0, 1728.0, 6048.0, 24192.0, 120960.0, 725760.0, 5080320.0, 40642560.0, 406425600.0, 4877107200.0]
+        };
+        const BOARD_SIZE = 8;
+        const CELL_COUNT = BOARD_SIZE * BOARD_SIZE;
+
+        // Mines Game State
+        let minesGameState = {
+            active: false,
+            bet: 0,
+            mineCount: 3, 
+            board: new Array(CELL_COUNT).fill(false),
+            revealedIndices: new Set(), 
+            safePicksCount: 0,
+            maxSafePicks: CELL_COUNT - 3,
+            currentMultiplier: 1.00,
+            cashedOut: false,
+        };
+        
+        // Wheel Game State
+        const WHEEL_PAYOUTS = { red: 2.0, black: 2.0, green: 14 }; // Multipliers
+        const COLORS = ['black', 'red', 'black', 'red', 'black', 'red', 'black', 'red', 'black', 'red', 'black', 'red', 'green'];
+        let wheelGameState = {
+            active: false,
+            bettingOpen: false,
+            timer: 10,
+            bets: { red: 0, black: 0, green: 0 },
+            totalBet: 0,
+            intervalId: null, 
+            timeoutId: null, 
+            scrollInterval: null,
+            resultColor: null,
+            wheelHistory: [],
+            wheelSegments: 54, 
+            isLooping: false, 
+        };
+
+        // Ball Pump Game State
+        let ballPumpGameState = {
+            active: false,
+            bet: 0,
+            currentMultiplier: 1.00,
+            burstChance: 0.05, 
+            isCashedOut: false,
+        };
+
+        // Formula/Car Crash Game State
+        let formulaGameState = {
+            active: false,
+            bet: 0,
+            currentMultiplier: 1.00,
+            crashPoint: 0,
+            intervalId: null,
+            isCashedOut: false,
+        };
+
+        // --- UI Elements ---
+        const balanceDisplay = () => document.getElementById('balance');
+        const betInput = () => document.getElementById('betInput');
+        const resultDisplay = () => document.getElementById('resultDisplay');
+        const messageBox = () => document.getElementById('messageBox');
+        const messageText = () => document.getElementById('messageText');
+        const loader = () => document.getElementById('loader');
+        
+        // Wheel Game UI
+        const wheelBettingControls = () => document.getElementById('wheelBettingControls');
+        const wheelTimerDisplay = () => document.getElementById('wheelTimerDisplay');
+        const wheelStatus = () => document.getElementById('wheelStatus');
+        const wheelTrack = () => document.getElementById('wheelTrack');
+        const wheelHistoryDisplay = () => document.getElementById('wheelHistory');
+        const betRedDisplay = () => document.getElementById('betRedDisplay');
+        const betBlackDisplay = () => document.getElementById('betBlackDisplay');
+        const betGreenDisplay = () => document.getElementById('betGreenDisplay');
+
+        // Ball Pump Game UI
+        const ballPumpMultiplierDisplay = () => document.getElementById('ballPumpMultiplierDisplay');
+        const ballPumpButton = () => document.getElementById('ballPumpButton');
+        const ballPumpActionButton = () => document.getElementById('ballPumpActionButton');
+
+
+        // Formula Game UI
+        const formulaMultiplierDisplay = () => document.getElementById('formulaMultiplierDisplay');
+        const formulaActionButton = () => document.getElementById('formulaActionButton');
+        const raceCar = () => document.getElementById('raceCar');
+        
+        // Profile UI 
+        const profileStatusText = () => document.getElementById('profileStatusText');
+        const profileManager = () => document.getElementById('profileManager');
+        const profileAuthStatus = () => document.getElementById('profileAuthStatus'); // Hidden in renderUI
+
+        // --- Firebase Initialization and Authentication ---
+
+        const getUserDocRef = (uid) => doc(db, 'artifacts', appId, 'users', uid, 'data', 'user_profile');
+
+        const initFirebase = async () => {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // *** MODIFICATION: Ensure only Anonymous Sign-In is used ***
+                if (initialAuthToken) {
+                    // Try custom token first (from environment), fall back to anonymous
+                    await signInWithCustomToken(auth, initialAuthToken).catch(err => {
+                        console.warn("Custom token sign-in failed, falling back to anonymous.", err);
+                        return signInAnonymously(auth);
+                    });
+                } else {
+                    // Start or resume session as Anonymous
+                    await signInAnonymously(auth);
+                }
+
+                // 2. Set up Auth State Listener
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        // Since only anonymous, nickname defaults to display name or generated ID
+                        nickname = user.displayName || 'Guest-' + user.uid.substring(0, 4); 
+                        
+                        await loadUserData();
+                    } else {
+                        // This case should be rare since we immediately sign in anonymously
+                        userId = null;
+                        nickname = 'Guest';
+                        balance = 0.00;
+                        isAuthReady = true;
+                        loader().classList.add('hidden');
+                        renderUI();
+                        switchGameView(currentView);
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                loader().classList.add('hidden');
+                showMessage('Initialization Failed. Check console.', 'bg-red-500');
+            }
+        };
+
+        const loadUserData = async () => {
+            if (!db || !auth.currentUser) return;
+
+            const userRef = getUserDocRef(auth.currentUser.uid);
+            
+            // Use onSnapshot for real-time updates to balance/nickname
+            onSnapshot(userRef, async (docSnap) => {
+                const isNewUser = !docSnap.exists();
+                if (isNewUser) {
+                    // Initialize new user data (1000 balance for first time)
+                    balance = 1000.00;
+                    const initialData = { 
+                        balance: balance.toFixed(2), 
+                        createdAt: new Date().getTime(), 
+                        email: 'anonymous', // Explicitly mark as anonymous
+                        nickname: auth.currentUser.displayName || 'Player-' + auth.currentUser.uid.substring(0, 4)
+                    };
+                    nickname = initialData.nickname;
+                    
+                    // Update Auth profile display name immediately
+                    await updateProfile(auth.currentUser, { displayName: initialData.nickname });
+                    
+
+                    await setDoc(userRef, initialData, { merge: true });
+                } else {
+                    const data = docSnap.data();
+                    balance = data.balance !== undefined ? parseFloat(data.balance) : 1000.00;
+                    wheelGameState.wheelHistory = data.wheelHistory || [];
+                    // Ensure nickname is updated from Firestore or Auth profile
+                    nickname = data.nickname || auth.currentUser.displayName || 'Anonymous Player'; 
+                }
+                
+                isAuthReady = true;
+                renderUI();
+                initAudio();
+                loader().classList.add('hidden');
+                switchGameView(currentView);
+                
+                // AUTOMATION: Start the wheel game immediately if it's the current view and not running
+                if (currentView === 'wheel' && !wheelGameState.isLooping) {
+                    wheelGameState.isLooping = true;
+                    wheelGameLoop();
+                }
+
+            }, (error) => {
+                console.error("Firestore listen failed:", error);
+                loader().classList.add('hidden');
+                showMessage('Data synchronization failed.', 'bg-red-500');
+            });
+        };
 
         const saveBalance = async (newBalance) => {
             if (!db || !auth.currentUser) {
@@ -14,8 +240,8 @@
                  return;
             }
             try {
-                // IMPORTANT: The local 'balance' variable is updated by the onSnapshot listener, 
-                // but we rely on the DB update for persistence. 
+                const userRef = getUserDocRef(auth.currentUser.uid);
+                // Use a direct update here to minimize potential race conditions 
                 await setDoc(userRef, { 
                     balance: newBalance.toFixed(2),
                     wheelHistory: wheelGameState.wheelHistory.slice(-20) // Keep last 20 results
@@ -29,8 +255,51 @@
         };
         
         // --- Authentication Handlers (Simplified) ---
-// ... (omitted unchanged functions: signOutUser, updateNickname)
-        
+
+        window.signOutUser = async () => {
+            // Since we only use anonymous sign-in, signing out and immediately signing in 
+            // anonymously again is the best way to essentially "reset" the user data 
+            // for the current session (though their old anonymous data remains in Firestore).
+            try {
+                await signOut(auth);
+                await signInAnonymously(auth); 
+                showMessage('You have started a new Guest session.', 'bg-yellow-600');
+            } catch (error) {
+                console.error("Sign Out/Reset Error:", error);
+                showMessage('Error starting new guest session.', 'bg-red-700');
+            }
+        };
+
+        window.updateNickname = async () => {
+             // Since we only use anonymous users, we check for a current user
+             if (!auth.currentUser) {
+                showMessage('You must be active to change your nickname.', 'bg-red-500');
+                return;
+            }
+            const newNickname = document.getElementById('nicknameInput').value.trim();
+            if (!newNickname) {
+                showMessage('Nickname cannot be empty.', 'bg-yellow-500');
+                return;
+            }
+            if (newNickname.length > 20) {
+                 showMessage('Nickname must be 20 characters or less.', 'bg-yellow-500');
+                return;
+            }
+            
+            try {
+                // 1. Update Firebase Auth Profile (which is now anonymous)
+                await updateProfile(auth.currentUser, { displayName: newNickname });
+                // 2. Update Firestore document (onSnapshot will handle the state update)
+                const userRef = getUserDocRef(auth.currentUser.uid);
+                await setDoc(userRef, { nickname: newNickname }, { merge: true });
+                
+                showMessage('Nickname updated successfully!', 'bg-green-600');
+            } catch (error) {
+                console.error("Nickname Update Error:", error);
+                showMessage('Failed to update nickname.', 'bg-red-700');
+            }
+        };
+
         window.manageBalance = async (type) => {
             const amountInput = document.getElementById(type === 'deposit' ? 'depositAmount' : 'withdrawAmount');
             const amount = parseFloat(amountInput.value);
@@ -50,20 +319,268 @@
 
             const newBalance = type === 'deposit' ? currentBalance + amount : currentBalance - amount;
             
-            // **FIX 5: Update the global 'balance' immediately for synchronous UI consistency**
-            balance = newBalance;
-
-            // Save the new balance (onSnapshot will confirm and update the local 'balance' state)
+            // Save the new balance (onSnapshot will update the local 'balance' state)
             await saveBalance(newBalance);
             showMessage(`${type.toUpperCase()} successful! New balance: $${newBalance.toFixed(2)}`, type === 'deposit' ? 'bg-green-600' : 'bg-yellow-600');
             amountInput.value = amountInput.defaultValue || '100'; // Reset input to default/placeholder
         };
 
 
-        // --- Utility Functions (omitted unchanged functions: renderUI, showMessage, resetResult, switchGameView, initAudio, playSound, toggleMute, setBetAmount, validateBet) ---
+        // --- Utility Functions ---
+        
+        const renderUI = () => {
+            // Header Display
+            balanceDisplay().textContent = balance.toFixed(2);
+            document.getElementById('nicknameDisplay').textContent = nickname;
 
-        // --- Mines Game Logic (Fixed cashOutMines) ---
-// ... (omitted unchanged functions: setMineCount, updateMinesUI, initMinesBoard, startMinesGame, revealCell)
+            // Profile View Status (Simplified)
+            // Since we are ONLY anonymous, we always show the profile manager.
+            profileAuthStatus().classList.add('hidden'); // Hide the Auth Form section
+            profileManager().classList.remove('hidden'); // Show Nickname/Balance manager
+            document.getElementById('currentNickname').textContent = nickname;
+            document.getElementById('nicknameInput').value = nickname;
+            profileStatusText().textContent = `Status: Guest (Anonymous). Your progress is saved locally using a unique ID, but it may be lost if you clear your browser data or use a different device.`;
+
+            // **FIXED MISTAKE: Sync bet input across all inputs that share the class**
+            const currentBet = betInput().value;
+            document.querySelectorAll('.bet-input-sync').forEach(input => {
+                // Only update the value if it's not the primary betInput itself (to avoid loop)
+                if (input.id !== 'betInput') {
+                    input.value = currentBet;
+                }
+            });
+
+            // Update individual game UIs
+            if (currentView === 'mines') updateMinesUI();
+            if (currentView === 'wheel') updateWheelUI();
+            if (currentView === 'ball') updateBallPumpUI();
+            if (currentView === 'formula') updateFormulaUI();
+        };
+
+        const showMessage = (text, bgColorClass) => {
+            messageText().textContent = text;
+            messageBox().className = `fixed bottom-4 right-4 p-4 rounded-lg shadow-lg text-white transition-opacity duration-300 ${bgColorClass}`;
+            messageBox().classList.remove('opacity-0', 'pointer-events-none');
+            setTimeout(() => {
+                messageBox().classList.add('opacity-0', 'pointer-events-none');
+            }, 3000);
+        };
+        
+        const resetResult = () => {
+            resultDisplay().innerHTML = 'Place a bet and choose a game.';
+            resultDisplay().className = 'text-lg font-bold';
+        }
+
+        window.switchGameView = (view) => {
+            // Stop background loops when switching away from games that run them
+            if (currentView === 'wheel' && view !== 'wheel') {
+                wheelGameState.isLooping = false;
+                if (wheelGameState.intervalId) clearInterval(wheelGameState.intervalId);
+                if (wheelGameState.timeoutId) clearTimeout(wheelGameState.timeoutId);
+            }
+
+            currentView = view;
+            document.querySelectorAll('.game-view').forEach(el => el.classList.add('hidden'));
+            document.getElementById(view + 'View').classList.remove('hidden');
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('border-b-4', 'border-yellow-400', 'text-yellow-400'));
+            document.getElementById(view + 'Tab').classList.add('border-b-4', 'border-yellow-400', 'text-yellow-400');
+            
+            if (view === 'mines') {
+                updateMinesUI(true);
+            } else if (view === 'wheel') {
+                updateWheelUI(true);
+                // If switching to wheel, ensure auto-loop starts
+                if (isAuthReady && !wheelGameState.isLooping) {
+                     wheelGameState.isLooping = true;
+                     wheelGameLoop();
+                }
+            } else if (view === 'ball') {
+                updateBallPumpUI();
+            } else if (view === 'formula') {
+                updateFormulaUI();
+            }
+
+            resetResult();
+        };
+
+        // --- Audio System (Simplified) ---
+
+        const initAudio = () => {
+            if (audioContextStarted) return;
+            try {
+                sfx.win = new Tone.MembraneSynth().toDestination();
+                sfx.lose = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.005, decay: 0.1, sustain: 0, release: 0.1 } }).toDestination();
+                sfx.bet = new Tone.Synth({ oscillator: { type: 'triangle' }, envelope: { attack: 0.005, decay: 0.1, sustain: 0, release: 0.1 } }).toDestination();
+                sfx.pump = new Tone.PluckSynth().toDestination(); 
+                sfx.tick = new Tone.Synth({ oscillator: { type: 'sine' }, envelope: { attack: 0.001, decay: 0.05, sustain: 0, release: 0.05 } }).toDestination();
+                sfx.spin = new Tone.Loop(time => {
+                    sfx.tick.triggerAttackRelease("C5", "64n", time);
+                }, "8n").start(0);
+                sfx.spin.mute = true;
+                
+                audioContextStarted = true;
+            } catch (e) {
+                console.error("Audio initialization failed:", e);
+            }
+        };
+        
+        const playSound = (name, delay = 0, note = null) => {
+            if (isMuted || !audioContextStarted || !sfx[name]) return;
+            Tone.start();
+
+            if (name === 'win') {
+                sfx.win.triggerAttackRelease('C4', '8n', delay);
+                sfx.win.triggerAttackRelease('E4', '8n', delay + 0.1);
+                sfx.win.triggerAttackRelease('G4', '8n', delay + 0.2);
+            } else if (name === 'lose') {
+                sfx.lose.triggerAttackRelease(0.5, delay);
+            } else if (name === 'bet') {
+                sfx.bet.triggerAttackRelease(note || 'C4', '16n', delay);
+            } else if (name === 'tick') {
+                 sfx.tick.triggerAttackRelease('F5', '32n', delay);
+            } else if (name === 'pump') {
+                 sfx.pump.triggerAttackRelease('G3', '32n', delay, 0.5);
+            }
+        };
+
+        window.toggleMute = () => {
+            isMuted = !isMuted;
+            const muteIcon = document.getElementById('muteIcon');
+            muteIcon.textContent = isMuted ? '🔇' : '🔊';
+            if (sfx.spin) sfx.spin.mute = isMuted;
+        };
+
+        window.setBetAmount = (value) => {
+            betInput().value = value;
+            renderUI(); // Sync across all inputs
+        }
+        
+        const validateBet = () => {
+            const bet = parseFloat(betInput().value);
+            if (!isAuthReady) {
+                showMessage('Authentication still loading, please wait.', 'bg-yellow-500');
+                return null;
+            }
+            if (isNaN(bet) || bet <= 0) {
+                showMessage('Please enter a valid bet amount.', 'bg-yellow-500');
+                return null;
+            }
+            // Use the global 'balance' state which is updated by the Firestore listener
+            if (balance < bet) {
+                showMessage('Insufficient funds to place this bet. Please deposit in your profile.', 'bg-red-500');
+                return null;
+            }
+            return bet;
+        };
+
+        // --- Mines Game Logic (Unchanged) ---
+
+        window.setMineCount = (count) => {
+            minesGameState.mineCount = parseInt(count);
+            minesGameState.maxSafePicks = CELL_COUNT - minesGameState.mineCount;
+            updateMinesUI(true);
+        };
+
+        const updateMinesUI = (isSetup = false) => {
+            const grid = document.getElementById('minesGrid');
+            if (isSetup || grid.children.length === 0) {
+                grid.style.gridTemplateColumns = `repeat(${BOARD_SIZE}, 1fr)`;
+                grid.innerHTML = '';
+                for (let i = 0; i < CELL_COUNT; i++) {
+                    const cell = document.createElement('div');
+                    cell.className = `mines-cell bg-gray-700 hover:bg-gray-600 cursor-pointer text-gray-100 font-bold transition-colors`;
+                    cell.setAttribute('onclick', `revealCell(${i})`);
+                    cell.id = `mines-cell-${i}`;
+                    cell.innerHTML = '💎'; // Placeholder before reveal
+                    grid.appendChild(cell);
+                }
+            }
+            
+            const { active, bet, mineCount, safePicksCount, currentMultiplier, cashedOut } = minesGameState;
+            
+            document.getElementById('minesStartBtn').classList.toggle('hidden', active);
+            document.getElementById('minesGameInfo').classList.toggle('hidden', !active);
+            
+            if (active) {
+                document.getElementById('minesCurrentMultiplier').textContent = currentMultiplier.toFixed(2) + 'x';
+                document.getElementById('minesCashoutBtn').textContent = `CASHOUT ($${(bet * currentMultiplier).toFixed(2)})`;
+                document.getElementById('minesCashoutBtn').disabled = safePicksCount === 0 || cashedOut;
+            } else {
+                document.getElementById('minesCashoutBtn').disabled = true;
+            }
+            
+            document.querySelectorAll('input[name="mineCount"]').forEach(radio => radio.disabled = active);
+        };
+
+        const initMinesBoard = () => {
+            minesGameState.board = new Array(CELL_COUNT).fill(false); 
+            minesGameState.revealedIndices.clear();
+            minesGameState.safePicksCount = 0;
+            minesGameState.currentMultiplier = 1.00;
+            minesGameState.cashedOut = false;
+            
+            let indices = Array.from({ length: CELL_COUNT }, (_, i) => i);
+            for (let i = 0; i < minesGameState.mineCount; i++) {
+                const randomIndex = Math.floor(Math.random() * indices.length);
+                const mineIndex = indices.splice(randomIndex, 1)[0];
+                minesGameState.board[mineIndex] = true;
+            }
+        };
+
+        const startMinesGame = (bet) => {
+            minesGameState.active = true;
+            minesGameState.bet = bet;
+            initMinesBoard();
+            updateMinesUI();
+            resultDisplay().textContent = `Mines Game Active: ${minesGameState.mineCount} mines placed. Bet: $${bet.toFixed(2)}`;
+            resultDisplay().className = 'text-lg font-bold text-blue-400';
+        };
+        
+        window.revealCell = (index) => {
+            if (!minesGameState.active || minesGameState.revealedIndices.has(index) || minesGameState.cashedOut) return;
+
+            const cell = document.getElementById(`mines-cell-${index}`);
+
+            if (minesGameState.board[index]) {
+                cell.classList.remove('bg-gray-700', 'hover:bg-gray-600');
+                cell.classList.add('bg-red-800');
+                cell.innerHTML = '💣';
+                minesGameState.active = false;
+                playSound('lose');
+                
+                minesGameState.board.forEach((isMine, i) => {
+                    if (isMine && i !== index) {
+                        const mineCell = document.getElementById(`mines-cell-${i}`);
+                        mineCell.classList.remove('bg-gray-700', 'hover:bg-gray-600');
+                        mineCell.classList.add('bg-gray-900');
+                        mineCell.innerHTML = '💣';
+                    }
+                });
+                
+                showMessage(`BOOM! Hit a mine. Lost $${minesGameState.bet.toFixed(2)}`, 'bg-red-700');
+                updateMinesUI();
+                resultDisplay().textContent = `Game Over. Lost $${minesGameState.bet.toFixed(2)}`;
+                resultDisplay().className = 'text-lg font-bold text-red-500';
+            } else {
+                cell.classList.remove('bg-gray-700', 'hover:bg-gray-600');
+                cell.classList.add('bg-green-700');
+                cell.innerHTML = '✅';
+                minesGameState.revealedIndices.add(index);
+                minesGameState.safePicksCount++;
+
+                const mineCountKey = minesGameState.mineCount.toString();
+                const multiplierIndex = minesGameState.safePicksCount - 1;
+                
+                if (MINES_MULTIPLIERS[mineCountKey] && MINES_MULTIPLIERS[mineCountKey].length > multiplierIndex) {
+                    minesGameState.currentMultiplier = MINES_MULTIPLIERS[mineCountKey][multiplierIndex];
+                    playSound('bet', 0, 'E5'); 
+                } else {
+                    minesGameState.currentMultiplier = 1.00 + (minesGameState.safePicksCount / 5);
+                }
+                
+                updateMinesUI();
+            }
+        };
 
         window.cashOutMines = () => {
             if (!minesGameState.active || minesGameState.cashedOut || minesGameState.safePicksCount === 0) return;
@@ -72,11 +589,11 @@
             minesGameState.active = false;
             
             const winnings = minesGameState.bet * minesGameState.currentMultiplier;
-            // **FIX 2: The full winnings amount is the new balance increase, as the bet was NOT deducted at start**
+            const netChange = winnings - minesGameState.bet;
+            // BUG FIX: Since the bet was already deducted in startGame, we must add the full payout (winnings) back.
+            // Original code was: const newBalance = balance + netChange;
             const newBalance = balance + winnings; 
-            const netChange = winnings - minesGameState.bet; // Only for message display
             
-            balance = newBalance; // Update local balance before save
             saveBalance(newBalance);
             playSound('win');
 
@@ -87,14 +604,287 @@
         };
 
         // -----------------------------------------------------------------
-        // --- Wheel Game Logic (Wheel deduction logic is correct and remains unchanged) ---
+        // --- Wheel Game Logic (Automated - Unchanged) ---
         // -----------------------------------------------------------------
-// ... (omitted unchanged wheel logic)
+
+        const updateWheelUI = (initial = false) => {
+            const { active, bettingOpen, timer, bets, wheelHistory } = wheelGameState;
+            
+            wheelTimerDisplay().textContent = bettingOpen ? `00:${timer.toString().padStart(2, '0')}` : (active ? 'ROLLING...' : '00:05');
+            
+            let statusText = 'AUTO-ROLL STOPPED';
+            let statusColor = 'bg-gray-600';
+            
+            if (wheelGameState.isLooping) {
+                if (bettingOpen) {
+                    statusText = 'BETTING OPEN';
+                    statusColor = 'bg-green-500';
+                } else if (active) {
+                    statusText = 'CLOSED - ROLLING';
+                    statusColor = 'bg-red-500';
+                } else {
+                    statusText = 'PAUSED (5 SECONDS)';
+                    statusColor = 'bg-yellow-600';
+                }
+            }
+
+            wheelStatus().textContent = statusText;
+            wheelStatus().className = `px-4 py-2 rounded-full text-sm font-bold ${statusColor}`;
+
+            wheelBettingControls().querySelectorAll('.wheel-bet-btn').forEach(btn => {
+                btn.disabled = !bettingOpen;
+                btn.classList.toggle('opacity-50', !bettingOpen);
+            });
+            
+            betRedDisplay().textContent = `Bet $${bets.red.toFixed(2)}`;
+            betBlackDisplay().textContent = `Bet $${bets.black.toFixed(2)}`;
+            betGreenDisplay().textContent = `Bet $${bets.green.toFixed(2)}`;
+            
+            wheelHistoryDisplay().innerHTML = wheelHistory.map(color => {
+                const displayColor = color; 
+                
+                const colorClass = displayColor === 'black' ? 'bg-gray-800' : (displayColor === 'red' ? 'bg-red-500' : 'bg-green-500');
+                
+                return `<div class="w-6 h-6 rounded-full ${colorClass} shadow-md border-2 border-gray-700"></div>`;
+            }).join('');
+        };
+
+        const generateWheelTrack = () => {
+             wheelTrack().innerHTML = '';
+             const trackColors = Array(20).fill(COLORS).flat(); 
+             
+             trackColors.forEach(color => {
+                 const div = document.createElement('div');
+                 const colorClass = color === 'red' ? 'bg-red-500' : (color === 'black' ? 'bg-gray-800' : 'bg-green-500');
+                 div.className = `wheel-segment h-16 w-8 flex-shrink-0 ${colorClass} border-r border-gray-900`;
+                 wheelTrack().appendChild(div);
+             });
+        };
+        
+        const wheelGameLoop = () => {
+            if (!wheelGameState.isLooping) return;
+            clearTimeout(wheelGameState.timeoutId); 
+
+            wheelGameState.active = true;
+            wheelGameState.bettingOpen = true;
+            wheelGameState.timer = 10;
+            wheelGameState.bets = { red: 0, black: 0, green: 0 };
+            wheelGameState.totalBet = 0;
+            wheelGameState.resultColor = null;
+
+            generateWheelTrack();
+            wheelTrack().style.transform = 'translateX(0)';
+
+            wheelGameState.intervalId = setInterval(tickWheelTimer, 1000);
+            updateWheelUI();
+            showMessage('BETTING OPEN! Place your bets now.', 'bg-green-600'); 
+        };
+
+        const tickWheelTimer = () => {
+            if (!wheelGameState.active || !wheelGameState.bettingOpen) return;
+
+            if (wheelGameState.timer > 0) {
+                wheelGameState.timer--;
+                updateWheelUI();
+                if (wheelGameState.timer < 4) playSound('tick');
+            } else {
+                clearInterval(wheelGameState.intervalId);
+                closeBetting();
+            }
+        };
+
+        window.placeWheelBet = (color) => {
+            const bet = validateBet();
+            if (bet === null || !wheelGameState.bettingOpen) return;
+            
+            if (balance < bet) {
+                showMessage('Insufficient funds to place this bet.', 'bg-red-500');
+                return;
+            }
+
+            wheelGameState.bets[color] += bet;
+            wheelGameState.totalBet += bet;
+            // The balance is deducted here, before the saveBalance call
+            balance -= bet; 
+            
+            saveBalance(balance); 
+            updateWheelUI();
+            playSound('bet', 0, color === 'green' ? 'G4' : 'D4');
+            showMessage(`Bet $${bet.toFixed(2)} placed on ${color.toUpperCase()}.`, 'bg-blue-600');
+        };
+
+        const closeBetting = () => {
+            wheelGameState.bettingOpen = false;
+            updateWheelUI();
+
+            if (wheelGameState.totalBet === 0) {
+                showMessage('No bets placed. Rolling anyway!', 'bg-gray-500');
+            } else {
+                showMessage('Betting CLOSED. Wheel is rolling!', 'bg-red-500');
+            }
+
+            const winningIndex = Math.floor(Math.random() * COLORS.length);
+            const resultColor = COLORS[winningIndex];
+            wheelGameState.resultColor = resultColor;
+            
+            animateWheelSpin(winningIndex);
+        };
+
+        const animateWheelSpin = (winningIndex) => {
+            const segmentWidth = 32; 
+            
+            // Corrected alignment: 
+            const finalStop = (COLORS.length * 10 * segmentWidth) - (winningIndex * segmentWidth) - (segmentWidth * 5); 
+
+            wheelTrack().style.transition = 'transform 4s cubic-bezier(0.3, 0.7, 0.7, 1)'; 
+            wheelTrack().style.transform = `translateX(-${finalStop}px)`;
+            
+            sfx.spin.start();
+
+            setTimeout(() => {
+                sfx.spin.stop();
+                wheelTrack().style.transition = 'none'; 
+                finishWheelRound();
+            }, 4000);
+        };
+
+        const finishWheelRound = () => {
+            wheelGameState.active = false;
+            wheelGameState.wheelHistory.push(wheelGameState.resultColor); 
+
+            const payouts = { red: 0, black: 0, green: 0 };
+            payouts[wheelGameState.resultColor] = WHEEL_PAYOUTS[wheelGameState.resultColor];
+
+            let winnings = 0; // Total money returned to player (includes original bet)
+            let totalBet = 0;
+            
+            for (const color of ['red', 'black', 'green']) {
+                if (wheelGameState.bets[color] > 0) {
+                    totalBet += wheelGameState.bets[color];
+                    const multiplier = payouts[color] > 0 ? payouts[color] : 0; 
+                    winnings += (wheelGameState.bets[color] * multiplier);
+                }
+            }
+
+            // **FIXED MISTAKE: Correctly calculate the final balance after deducting the initial bet(s) and adding winnings.**
+            // The initial bet was already deducted in placeWheelBet, so we just add the winnings back.
+            // Winnings is the total amount returned (bet * multiplier), netChange is the profit/loss.
+            const newBalance = balance + winnings; 
+            const netChange = winnings - totalBet; 
+            
+            saveBalance(newBalance);
+            
+            const isLoss = netChange < 0;
+            const isWin = netChange > 0;
+            
+            let displayResultColor = wheelGameState.resultColor;
+
+            let message = `Wheel Result: ${displayResultColor.toUpperCase()} (${WHEEL_PAYOUTS[wheelGameState.resultColor].toFixed(1)}x). Total Bet: $${totalBet.toFixed(2)}. Net Change: $${netChange.toFixed(2)}`;
+
+            if (isWin) {
+                playSound('win');
+            } else if (isLoss) {
+                playSound('lose');
+            }
+
+            resultDisplay().textContent = message;
+            resultDisplay().className = `text-lg font-bold ${isLoss ? 'text-red-500' : (isWin ? 'text-green-500' : 'text-gray-400')}`;
+            showMessage(`Round finished! Net Change: ${netChange.toFixed(2)}`, isLoss ? 'bg-red-700' : (isWin ? 'bg-green-700' : 'bg-yellow-600'));
+
+            updateWheelUI();
+
+            wheelGameState.timeoutId = setTimeout(() => {
+                if (wheelGameState.isLooping) {
+                    wheelGameLoop();
+                }
+            }, 5000); 
+        };
 
         // -----------------------------------------------------------------
-        // --- Ball Pump Game Logic (Fixed cashOutBallPump) ---
+        // --- Ball Pump Game Logic (Unchanged) ---
         // -----------------------------------------------------------------
-// ... (omitted unchanged functions: updateBallPumpUI, startBallPumpGame, pumpBall)
+
+        const updateBallPumpUI = () => {
+            const { active, bet, currentMultiplier, isCashedOut } = ballPumpGameState;
+
+            ballPumpMultiplierDisplay().textContent = currentMultiplier.toFixed(2) + 'x';
+            ballPumpButton().disabled = !active || isCashedOut;
+            
+            const ballElement = document.getElementById('bouncyBall');
+            
+            ballPumpActionButton().classList.remove('btn-green', 'btn-purple');
+
+            if (active && !isCashedOut) {
+                ballPumpActionButton().textContent = `CASHOUT ($${(bet * currentMultiplier).toFixed(2)})`;
+                ballPumpActionButton().classList.add('btn-green');
+                ballPumpActionButton().onclick = cashOutBallPump;
+                ballPumpActionButton().disabled = currentMultiplier <= 1.00; 
+                
+                const size = Math.min(24 + (currentMultiplier * 4), 64); 
+                ballElement.style.width = `${size}px`;
+                ballElement.style.height = `${size}px`;
+                ballPumpButton().textContent = 'PUMP BALL (Gain: +0.15x)';
+                ballPumpMultiplierDisplay().classList.add('text-green-400', 'animate-pulse');
+                ballPumpMultiplierDisplay().classList.remove('text-red-500', 'text-gray-400', 'text-purple-400');
+
+            } else {
+                ballPumpActionButton().textContent = 'START INFLATING';
+                ballPumpActionButton().classList.add('btn-purple');
+                ballPumpActionButton().onclick = () => startGame('ball');
+                ballPumpActionButton().disabled = false;
+                ballPumpButton().textContent = 'PUMP BALL (Disabled)';
+
+                ballElement.style.width = '24px';
+                ballElement.style.height = '24px';
+                ballPumpMultiplierDisplay().classList.remove('text-green-400', 'text-red-500', 'animate-pulse');
+                ballPumpMultiplierDisplay().classList.add(isCashedOut ? 'text-purple-400' : 'text-gray-400');
+            }
+        };
+
+        const startBallPumpGame = (bet) => {
+            ballPumpGameState.active = true;
+            ballPumpGameState.bet = bet;
+            ballPumpGameState.currentMultiplier = 1.00;
+            ballPumpGameState.isCashedOut = false;
+
+            updateBallPumpUI();
+            resultDisplay().textContent = `Inflate & Explode Active: Start pumping to increase multiplier. Bet: $${bet.toFixed(2)}`;
+            resultDisplay().className = 'text-lg font-bold text-purple-400';
+        };
+        
+        window.pumpBall = () => {
+            if (!ballPumpGameState.active || ballPumpGameState.isCashedOut) return;
+            
+            if (Math.random() < ballPumpGameState.burstChance) {
+                ballPumpGameState.active = false;
+                ballPumpMultiplierDisplay().classList.remove('text-green-400', 'animate-pulse');
+                ballPumpMultiplierDisplay().classList.add('text-red-500');
+                
+                const ballElement = document.getElementById('bouncyBall');
+                ballElement.classList.add('bg-red-500', 'animate-none');
+                ballElement.innerHTML = '💥';
+
+                playSound('lose');
+                
+                // Balance already deducted when game started
+                showMessage(`*BANG*! Ball burst at ${ballPumpGameState.currentMultiplier.toFixed(2)}x. Lost $${ballPumpGameState.bet.toFixed(2)}`, 'bg-red-700');
+                resultDisplay().textContent = `BURST! Multiplier was ${ballPumpGameState.currentMultiplier.toFixed(2)}x. Lost $${ballPumpGameState.bet.toFixed(2)}`;
+                resultDisplay().className = 'text-lg font-bold text-red-500';
+                
+                setTimeout(() => {
+                    updateBallPumpUI();
+                    ballElement.classList.remove('bg-red-500');
+                    ballElement.innerHTML = '🎈';
+                }, 500); 
+                return;
+            }
+
+            ballPumpGameState.currentMultiplier += 0.15; 
+            playSound('pump');
+            
+            updateBallPumpUI();
+            showMessage(`PUMP! Multiplier is now ${ballPumpGameState.currentMultiplier.toFixed(2)}x.`, 'bg-purple-600');
+        };
 
         window.cashOutBallPump = () => {
             if (!ballPumpGameState.active || ballPumpGameState.isCashedOut || ballPumpGameState.currentMultiplier === 1.00) return;
@@ -104,10 +894,9 @@
 
             const winnings = ballPumpGameState.bet * ballPumpGameState.currentMultiplier;
             const netChange = winnings - ballPumpGameState.bet;
-            // **FIX 3: Only add the winnings/payout (bet * multiplier). The bet was NOT deducted at start.**
+            // **FIXED MISTAKE: Only add the winnings/payout, as the original bet was already deducted.**
             const newBalance = balance + winnings; 
             
-            balance = newBalance; // Update local balance before save
             saveBalance(newBalance);
             playSound('win');
 
@@ -118,9 +907,91 @@
         };
 
         // -----------------------------------------------------------------
-        // --- Formula (Crash) Game Logic (Fixed cashOutFormula) ---
+        // --- Formula (Crash) Game Logic (Unchanged) ---
         // -----------------------------------------------------------------
-// ... (omitted unchanged functions: updateFormulaUI, startFormulaGame, animateFormulaCrash)
+        
+        const updateFormulaUI = () => {
+            const { active, bet, currentMultiplier, isCashedOut } = formulaGameState;
+            
+            formulaMultiplierDisplay().textContent = currentMultiplier.toFixed(2) + 'x';
+            
+            formulaActionButton().disabled = false; 
+            formulaActionButton().classList.remove('btn-red', 'btn-yellow', 'btn-gray');
+
+            if (active && !isCashedOut) {
+                formulaActionButton().textContent = `PIT STOP / CASHOUT ($${(bet * currentMultiplier).toFixed(2)})`;
+                formulaActionButton().classList.add('btn-yellow');
+                formulaActionButton().onclick = cashOutFormula;
+                
+                formulaMultiplierDisplay().classList.add('text-red-600', 'animate-pulse');
+                formulaMultiplierDisplay().classList.remove('text-yellow-500', 'text-green-500', 'text-gray-400');
+            } else {
+                formulaActionButton().textContent = 'START RACE';
+                formulaActionButton().classList.add('btn-red');
+                formulaActionButton().onclick = () => startGame('formula');
+
+                if (isCashedOut) {
+                    formulaMultiplierDisplay().classList.remove('animate-pulse', 'text-red-600');
+                    formulaMultiplierDisplay().classList.add('text-green-500');
+                } else {
+                    formulaMultiplierDisplay().classList.remove('animate-pulse', 'text-red-600', 'text-green-500');
+                    formulaMultiplierDisplay().classList.add('text-yellow-500');
+                }
+            }
+        };
+
+        const startFormulaGame = (bet) => {
+            formulaGameState.active = true;
+            formulaGameState.bet = bet;
+            formulaGameState.currentMultiplier = 1.00;
+            formulaGameState.isCashedOut = false;
+
+            // Random crash point between 1.01 and 50.00
+            formulaGameState.crashPoint = 1.01 + Math.pow(Math.random(), 2.5) * 48.99; 
+            
+            raceCar().style.transform = `translateX(0) translateY(-50%)`;
+            formulaGameState.intervalId = setInterval(animateFormulaCrash, 75); 
+            updateFormulaUI();
+            resultDisplay().textContent = `Formula Race Active: Car is speeding up. Cashout before it crashes! Bet: $${bet.toFixed(2)}`;
+            resultDisplay().className = 'text-lg font-bold text-red-500';
+        };
+
+        const animateFormulaCrash = () => {
+            if (!formulaGameState.active || formulaGameState.isCashedOut) return;
+
+            const step = Math.pow(1.0015, formulaGameState.currentMultiplier) * 0.015;
+            formulaGameState.currentMultiplier += step;
+            
+            // Logarithmic scaling for visual representation (0% to 90%)
+            const maxVisualMultiplier = 15.0; 
+            const visualMultiplier = Math.min(formulaGameState.currentMultiplier, maxVisualMultiplier);
+            
+            // Use a non-linear scale for better progression visual
+            const percent = (visualMultiplier / maxVisualMultiplier) * 90; 
+
+            const carElement = raceCar();
+            if (carElement) {
+                 carElement.style.transform = `translateX(${percent}%) translateY(-50%)`;
+            }
+
+            if (formulaGameState.currentMultiplier >= formulaGameState.crashPoint) {
+                clearInterval(formulaGameState.intervalId);
+                formulaGameState.active = false;
+                
+                playSound('lose');
+
+                if (!formulaGameState.isCashedOut) {
+                    // Balance already deducted
+                    showMessage(`CRASH! Car went off track at ${formulaGameState.crashPoint.toFixed(2)}x. Lost $${formulaGameState.bet.toFixed(2)}`, 'bg-red-700');
+                    resultDisplay().textContent = `CRASHED at ${formulaGameState.crashPoint.toFixed(2)}x. Lost $${formulaGameState.bet.toFixed(2)}`;
+                    resultDisplay().className = 'text-lg font-bold text-red-500';
+                }
+                
+                setTimeout(updateFormulaUI, 500); 
+            } else {
+                updateFormulaUI();
+            }
+        };
 
         window.cashOutFormula = () => {
             if (!formulaGameState.active || formulaGameState.isCashedOut) return;
@@ -131,10 +1002,9 @@
 
             const winnings = formulaGameState.bet * formulaGameState.currentMultiplier;
             const netChange = winnings - formulaGameState.bet;
-            // **FIX 4: Only add the winnings/payout (bet * multiplier). The bet was NOT deducted at start.**
+            // **FIXED MISTAKE: Only add the winnings/payout, as the original bet was already deducted.**
             const newBalance = balance + winnings; 
             
-            balance = newBalance; // Update local balance before save
             saveBalance(newBalance);
             playSound('win');
 
@@ -152,62 +1022,8 @@
 
             resetResult();
             
-            // **FIX 1: For single-round games (Mines, Ball, Formula), the bet is NOT deducted here.**
-            // The logic for these games is:
-            // 1. Game starts (Balance unchanged).
-            // 2. If lost: newBalance = balance - bet. (Handled inside the lose/crash condition)
-            // 3. If won/cashed out: newBalance = balance - bet + (bet * multiplier). (Handled inside cashout)
-            
-            // The code for loss condition for Ball/Formula/Mines is NOT explicitly subtracting balance on lose, 
-            // and the win condition is adding the full winnings. This means the bet must be deducted immediately. 
-            // Since the original code DEDUCTED THE BET HERE, I will keep that logic and fix the cashout/payout. 
-            // I will now RE-ENABLE the balance deduction here and revert the cashout fix 2, 3, 4.
-
-            // -----------------------------------------------------------------
-            // RETHINKING: Reverting Fixes 2, 3, 4 and fixing the "lose" condition instead.
-            // If the bet is deducted at the start, the cashout should only add the NET profit.
-            // But the original lose condition *did not* deduct the bet again.
-            // A simpler, more robust pattern for these games is:
-            // 1. Deduct bet at `startGame`.
-            // 2. If lose: do nothing (bet is already gone).
-            // 3. If win: newBalance = balance + winnings (bet * multiplier). 
-            // The original logic for win was newBalance = balance + netChange (winnings - bet), which is WRONG if 'balance' is the post-deduction balance.
-            
-            // Let's stick to the simplest model: **Deduct on start, add total payout on win/cashout.**
-            // The only *true* error was in the Wheel game's payout logic (which I already commented on).
-            
-            // **The correct way to handle the single-round game deductions (Mines, Ball, Formula):**
-            // The `balance` variable is the current money.
-            // 1. Deduct bet: `balance -= bet; saveBalance(balance);` (Done in `startGame`).
-            // 2. On Win/Cashout: `newBalance = balance + (bet * multiplier); saveBalance(newBalance);` (Must be fixed in cashout functions).
-            // 3. On Loss: Do nothing, the bet is already gone. (Correct in original code).
-            
-            // **Re-applying and correcting the cashout fixes:**
-            
-            // The original logic for single-round game cashouts was:
-            // const netChange = winnings - game.bet; // Correct net profit
-            // const newBalance = balance + netChange; // WRONG if 'balance' is the post-deduction amount.
-            // If the bet was deducted at start, the new balance should be: 
-            // newBalance = (balance_start - bet) + (bet * multiplier)
-            // Since `balance` in this function is `(balance_start - bet)`, the correct line is:
-            // newBalance = balance + winnings; // where winnings = bet * multiplier.
-            
-            // **The original code *had* a bug where it was adding `netChange`:**
-            // `const newBalance = balance + netChange;` 
-            // E.g., Balance=100. Bet=10. Start game: balance=90. Win 2x: Winnings=20. NetChange=10. 
-            // Original code: newBalance = 90 + 10 = 100. **CORRECT.**
-            
-            // **My first set of fixes (2, 3, 4) was wrong! The original cashout logic was correct IF the bet was deducted at start!**
-            // I will now revert fixes 2, 3, 4 and focus ONLY on the missing local `balance` update in `manageBalance`.
-            
-            // Final decision: The balance logic is fundamentally correct in the single-round games IF `balance` is the post-deduction value.
-            // The WHEEL game was the one with the correct deduction/payout model initially.
-            // The only remaining non-game-related balance error is in `manageBalance`.
-            
-            // I will now commit only FIX 5 and the other minor corrections outside of the single-round game logic which seemed correct.
-            
             // Deduct balance and start the game
-            balance -= bet; // Keep this deduction!
+            balance -= bet;
             saveBalance(balance);
 
             if (gameType === 'mines') {
@@ -223,5 +1039,391 @@
         };
 
 
-        // --- Master Initialization (omitted unchanged: window.onload) ---
+        // --- Master Initialization ---
+        window.onload = () => {
+             initFirebase();
+        };
     </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Inter:wght@400;700&display=swap');
+        
+        body { font-family: 'Inter', sans-serif; }
+        .font-orbitron { font-family: 'Orbitron', monospace; }
+
+        .card {
+            background-color: #1f2937; /* Darker background */
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2);
+            border: 1px solid #374151;
+        }
+        .btn {
+            padding: 0.75rem 1.25rem;
+            border-radius: 0.5rem;
+            font-weight: 700;
+            transition: all 0.15s;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .btn:hover { box-shadow: 0 6px 8px rgba(0, 0, 0, 0.2); transform: translateY(-1px); }
+        .btn-red { background-color: #ef4444; color: white; }
+        .btn-red:hover { background-color: #dc2626; }
+        .btn-green { background-color: #10b981; color: white; }
+        .btn-green:hover { background-color: #059669; }
+        .btn-yellow { background-color: #f59e0b; color: white; }
+        .btn-yellow:hover { background-color: #d97706; }
+        .btn-purple { background-color: #9333ea; color: white; }
+        .btn-purple:hover { background-color: #7e22ce; }
+        .btn-blue { background-color: #3b82f6; color: white; }
+        .btn-blue:hover { background-color: #2563eb; }
+        .btn-gray { background-color: #4b5563; color: #d1d5db; cursor: not-allowed; }
+        
+        /* Mines Grid Styles */
+        #minesGrid {
+            display: grid;
+            gap: 4px;
+            width: 100%;
+            max-width: 512px; 
+            margin: 0 auto;
+            aspect-ratio: 1 / 1;
+        }
+        .mines-cell {
+            aspect-ratio: 1 / 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            border-radius: 0.375rem;
+            transition: background-color 0.1s;
+            line-height: 1; 
+        }
+
+        /* Wheel Styles */
+        #wheelContainer {
+            overflow: hidden;
+            border-radius: 0.75rem;
+            background-color: #000;
+            border: 4px solid #f59e0b;
+        }
+        #wheelTrack {
+            display: flex;
+            transition: transform 0.0s linear; /* Default no transition */
+        }
+        .wheel-segment {
+            box-sizing: border-box;
+        }
+        .wheel-indicator {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 4px;
+            height: 100%;
+            background-color: #f59e0b;
+            z-index: 10;
+        }
+        
+        /* Ball/Crash UI */
+        #bouncyBall {
+            background-color: #3b82f6;
+            border-radius: 9999px; /* circle */
+            transition: all 0.1s ease-out;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+        }
+        
+        /* Race Car Styling */
+        #raceCar {
+            transition: transform 0.075s linear;
+        }
+        
+        /* Utility for radio buttons */
+        input[type="radio"]:checked + span {
+            background-color: #374151;
+            outline: 2px solid #f59e0b;
+        }
+        
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex flex-col items-center p-4">
+
+    <div id="loader" class="fixed inset-0 bg-gray-900/90 flex flex-col items-center justify-center z-50">
+        <h2 class="text-3xl font-extrabold text-yellow-400 mb-4 animate-pulse">Loading Casino Assets...</h2>
+        <p class="text-xl text-gray-400">Authenticating connection and setting up game tables...</p>
+        <div class="mt-4 w-64 bg-gray-700 rounded-full h-3">
+            <div class="h-3 bg-green-500 rounded-full w-4/5 animate-none"></div>
+        </div>
+    </div>
+
+    <div class="w-full max-w-4xl mx-auto space-y-6">
+        
+        <header class="flex justify-between items-center pb-4 border-b border-gray-700 sticky top-0 bg-gray-900 z-10">
+            <div>
+                <h1 class="text-2xl font-extrabold text-yellow-400">High-Stakes Casino</h1>
+                <p class="text-sm text-gray-400">Player: <span id="nicknameDisplay" class="font-bold text-yellow-300">Guest</span></p>
+            </div>
+            <div class="flex items-center space-x-3">
+                <button id="muteButton" onclick="toggleMute()" class="w-10 h-10 flex items-center justify-center rounded-full bg-gray-600 hover:bg-gray-500 transition-colors">
+                    <span id="muteIcon" class="text-xl">🔊</span>
+                </button>
+                <div class="text-right">
+                    <p class="text-sm text-gray-400">Balance</p>
+                    <p class="text-xl font-bold text-green-400">$<span id="balance">0.00</span></p>
+                </div>
+                <button onclick="switchGameView('profile')" class="w-10 h-10 flex items-center justify-center rounded-full bg-blue-600 transition-colors text-white text-lg font-bold hover:bg-blue-500">
+                    👤
+                </button>
+            </div>
+        </header>
+
+        <div class="flex border-b border-gray-700 overflow-x-auto">
+            <button id="minesTab" onclick="switchGameView('mines')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-300 border-b-4 border-transparent">Mines</button>
+            <button id="wheelTab" onclick="switchGameView('wheel')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-300 border-b-4 border-transparent">Roulette</button>
+            <button id="ballTab" onclick="switchGameView('ball')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-300 border-b-4 border-transparent">Inflate & Explode</button>
+            <button id="formulaTab" onclick="switchGameView('formula')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-300 border-b-4 border-transparent">Formula (Crash)</button>
+            <button id="profileTab" onclick="switchGameView('profile')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-300 border-b-4 border-transparent ml-auto">Profile</button>
+        </div>
+
+        <div id="gameContainer" class="space-y-6">
+            
+            <input type="number" id="betInput" value="10" min="1" step="1" class="hidden" oninput="setBetAmount(this.value)">
+
+            <div id="profileView" class="game-view hidden">
+                <div class="card space-y-6">
+                    <h2 class="text-3xl font-extrabold text-blue-400 border-b border-gray-700 pb-3">Player Profile (Guest Mode)</h2>
+                    
+                    <p id="profileStatusText" class="text-lg font-medium text-gray-300">Status: Guest (Anonymous). Your progress is saved locally using a unique ID, but it may be lost if you clear your browser data or use a different device.</p>
+
+                    <div id="profileManager" class="space-y-6">
+                        
+                        <div class="space-y-3 p-4 bg-gray-800 rounded-lg">
+                            <h3 class="text-xl font-semibold text-yellow-400">Nickname</h3>
+                            <p class="text-sm text-gray-400">Current Nickname: <span id="currentNickname" class="font-bold text-gray-100"></span></p>
+                            <div class="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
+                                <input type="text" id="nicknameInput" maxlength="20" class="flex-grow p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600" placeholder="Enter new nickname (Max 20 chars)">
+                                <button onclick="updateNickname()" class="btn btn-purple">Update Nickname</button>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4 p-4 bg-gray-800 rounded-lg">
+                            <h3 class="text-xl font-semibold text-green-400">Balance Management (Simulated)</h3>
+                            
+                            <div class="flex flex-wrap items-center space-x-3">
+                                <label for="depositAmount" class="font-medium text-gray-400 w-24">Deposit</label>
+                                <input type="number" id="depositAmount" min="1" step="10" class="flex-grow p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 max-w-[120px]" value="100">
+                                <button onclick="manageBalance('deposit')" class="btn btn-green flex-grow max-w-[150px] mt-2 sm:mt-0">Deposit Funds</button>
+                            </div>
+
+                            <div class="flex flex-wrap items-center space-x-3">
+                                <label for="withdrawAmount" class="font-medium text-gray-400 w-24">Withdraw</label>
+                                <input type="number" id="withdrawAmount" min="1" step="10" class="flex-grow p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 max-w-[120px]" value="100">
+                                <button onclick="manageBalance('withdraw')" class="btn btn-yellow flex-grow max-w-[150px] mt-2 sm:mt-0">Withdraw Funds</button>
+                            </div>
+
+                            <p class="text-xs text-gray-500 mt-2">Note: All transactions are simulated for this application.</p>
+                        </div>
+                        
+                        <div class="pt-4 border-t border-gray-700">
+                             <button onclick="signOutUser()" class="btn btn-red">Start New Guest Session</button>
+                             <p class="text-xs text-gray-500 mt-1">This will generate a new unique ID and reset your balance to $1000.</p>
+                        </div>
+                    </div>
+
+                    <div id="profileAuthStatus" class="space-y-4 hidden">
+                        </div>
+
+                </div>
+            </div>
+
+            <div id="minesView" class="game-view hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    
+                    <div class="card lg:col-span-1 flex flex-col space-y-4">
+                        <h2 class="text-xl font-semibold text-red-400 border-b border-gray-700 pb-2">Mines Setup</h2>
+                        
+                        <div class="flex justify-between items-center">
+                            <label for="betInputMines" class="font-medium text-gray-400">Bet Amount ($)</label>
+                            <input type="number" id="betInputMines" value="10" min="1" step="1" class="bet-input-sync w-28 p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500 text-lg font-bold text-center" oninput="setBetAmount(this.value)">
+                        </div>
+
+                        <div id="minesSetupControls" class="space-y-3">
+                            <label class="font-medium text-gray-300 block">Select Mine Count:</label>
+                            <div class="grid grid-cols-2 gap-3">
+                                <label class="block cursor-pointer">
+                                    <input type="radio" name="mineCount" value="3" class="hidden" checked onchange="setMineCount(this.value)">
+                                    <span class="p-3 rounded-lg flex flex-col items-center justify-center border-2 border-red-500 hover:bg-gray-700 transition-colors">
+                                        <span class="text-xl font-bold">3 Mines</span>
+                                        <span class="text-xs text-gray-400">Lowest Risk</span>
+                                    </span>
+                                </label>
+                                <label class="block cursor-pointer">
+                                    <input type="radio" name="mineCount" value="5" class="hidden" onchange="setMineCount(this.value)">
+                                    <span class="p-3 rounded-lg flex flex-col items-center justify-center border-2 border-red-600 hover:bg-gray-700 transition-colors">
+                                        <span class="text-xl font-bold">5 Mines</span>
+                                        <span class="text-xs text-gray-400">Medium Risk</span>
+                                    </span>
+                                </label>
+                                <label class="block cursor-pointer">
+                                    <input type="radio" name="mineCount" value="9" class="hidden" onchange="setMineCount(this.value)">
+                                    <span class="p-3 rounded-lg flex flex-col items-center justify-center border-2 border-red-700 hover:bg-gray-700 transition-colors">
+                                        <span class="text-xl font-bold">9 Mines</span>
+                                        <span class="text-xs text-gray-400">High Risk</span>
+                                    </span>
+                                </label>
+                                <label class="block cursor-pointer">
+                                    <input type="radio" name="mineCount" value="15" class="hidden" onchange="setMineCount(this.value)">
+                                    <span class="p-3 rounded-lg flex flex-col items-center justify-center border-2 border-red-800 hover:bg-gray-700 transition-colors">
+                                        <span class="text-xl font-bold">15 Mines</span>
+                                        <span class="text-xs text-gray-400">Extreme Risk</span>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <button id="minesStartBtn" onclick="startGame('mines')" class="btn btn-red w-full text-xl">START GAME (Deducts Bet)</button>
+                        
+                        <div id="minesGameInfo" class="hidden space-y-3 pt-2 border-t border-gray-700">
+                            <p class="text-xl font-bold text-gray-300 text-center">Multiplier: <span id="minesCurrentMultiplier" class="text-green-400 font-orbitron text-3xl">1.00x</span></p>
+                            <button id="minesCashoutBtn" onclick="cashOutMines()" class="btn btn-green w-full text-xl disabled:opacity-50" disabled>CASHOUT ($10.00)</button>
+                        </div>
+                    </div> 
+
+                    <div class="card lg:col-span-2">
+                        <div id="minesGrid" class="mines-grid-placeholder">
+                            </div>
+                    </div>
+                </div>
+            </div> <div id="wheelView" class="game-view hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="card lg:col-span-1 space-y-4">
+                        <h2 class="text-xl font-semibold text-yellow-400 border-b border-gray-700 pb-2">Place Bets</h2>
+                        
+                        <div class="flex justify-between items-center">
+                            <label for="betInputWheel" class="font-medium text-gray-400">Bet Amount ($)</label>
+                            <input type="number" id="betInputWheel" value="10" min="1" step="1" class="bet-input-sync w-28 p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500 text-lg font-bold text-center" oninput="setBetAmount(this.value)">
+                        </div>
+                        
+                        <div id="wheelBettingControls" class="space-y-3 pt-2">
+                            <button onclick="placeWheelBet('red')" class="wheel-bet-btn w-full btn btn-red justify-between flex items-center">
+                                <span>2x (Red)</span>
+                                <span id="betRedDisplay" class="font-orbitron">$0.00</span>
+                            </button>
+                            <button onclick="placeWheelBet('black')" class="wheel-bet-btn w-full btn bg-gray-800 text-white justify-between flex items-center hover:bg-gray-700">
+                                <span>2x (Black)</span>
+                                <span id="betBlackDisplay" class="font-orbitron">$0.00</span>
+                            </button>
+                            <button onclick="placeWheelBet('green')" class="wheel-bet-btn w-full btn btn-green justify-between flex items-center">
+                                <span>14x (Green)</span>
+                                <span id="betGreenDisplay" class="font-orbitron">$0.00</span>
+                            </button>
+                        </div>
+                        <p class="text-xs text-gray-500 text-center pt-2">The roulette game runs automatically and rolls every 15 seconds. Bets are deducted immediately.</p>
+                    </div>
+
+                    <div class="card lg:col-span-2 space-y-4">
+                        <div class="flex justify-between items-center">
+                            <div class="flex items-center space-x-2">
+                                <span class="text-sm font-semibold text-gray-400">Status:</span>
+                                <span id="wheelStatus" class="px-4 py-2 rounded-full text-sm font-bold bg-gray-600">PAUSED</span>
+                            </div>
+                            <span id="wheelTimerDisplay" class="text-3xl font-orbitron text-yellow-400">00:00</span>
+                        </div>
+
+                        <div id="wheelContainer" class="relative h-16 w-full my-4">
+                            <div id="wheelIndicator" class="wheel-indicator"></div>
+                            <div id="wheelTrack" class="flex absolute top-0 left-0">
+                                </div>
+                        </div>
+
+                        <div class="pt-4 border-t border-gray-700">
+                            <h3 class="text-sm font-semibold text-gray-400 mb-2">Last 20 Rolls:</h3>
+                            <div id="wheelHistory" class="flex space-x-1 overflow-x-auto pb-1">
+                                </div>
+                        </div>
+                    </div>
+                </div>
+            </div> <div id="ballView" class="game-view hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    
+                    <div class="card lg:col-span-1 space-y-4">
+                         <h2 class="text-xl font-semibold text-purple-400 border-b border-gray-700 pb-2">Inflate Setup</h2>
+                         <div class="flex justify-between items-center">
+                            <label for="betInputBall" class="font-medium text-gray-400">Bet Amount ($)</label>
+                            <input type="number" id="betInputBall" value="10" min="1" step="1" class="bet-input-sync w-28 p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500 text-lg font-bold text-center" oninput="setBetAmount(this.value)">
+                        </div>
+
+                        <p class="text-sm text-gray-400">Each pump increases the multiplier by +0.15x, but there is a 5% chance the ball will explode!</p>
+
+                        <button id="ballPumpActionButton" onclick="startGame('ball')" class="btn btn-purple w-full text-xl mt-4">START INFLATING</button>
+                    </div>
+
+                    <div class="card lg:col-span-2 flex flex-col items-center justify-center space-y-8">
+                        
+                        <div class="text-center">
+                            <p class="text-lg font-semibold text-gray-400">Current Multiplier</p>
+                            <p id="ballPumpMultiplierDisplay" class="font-orbitron text-6xl text-gray-400 transition-colors">1.00x</p>
+                        </div>
+                        
+                        <div class="flex items-center justify-center h-48 w-48 bg-gray-800 rounded-full border-4 border-dashed border-purple-500 relative">
+                            <div id="bouncyBall" class="w-6 h-6 bg-blue-500 rounded-full shadow-2xl flex items-center justify-center text-4xl">
+                                🎈
+                            </div>
+                            <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <span class="text-white text-xs font-bold animate-pulse">~5% Burst Chance/Pump</span>
+                            </div>
+                        </div>
+
+                        <button id="ballPumpButton" onclick="pumpBall()" class="btn btn-blue w-full max-w-sm text-lg font-bold disabled:opacity-50" disabled>PUMP BALL</button>
+                    </div>
+                </div>
+            </div> <div id="formulaView" class="game-view hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    
+                    <div class="card lg:col-span-1 space-y-4">
+                         <h2 class="text-xl font-semibold text-red-400 border-b border-gray-700 pb-2">Race Setup</h2>
+                         
+                        <div class="flex justify-between items-center">
+                            <label for="betInputFormula" class="font-medium text-gray-400">Bet Amount ($)</label>
+                            <input type="number" id="betInputFormula" value="10" min="1" step="1" class="bet-input-sync w-28 p-2 rounded-lg bg-gray-700 text-gray-100 border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500 text-lg font-bold text-center" oninput="setBetAmount(this.value)">
+                        </div>
+
+                        <p class="text-sm text-gray-400">The multiplier increases rapidly. Cashout before the car crashes (random point between 1.01x and 50x)!</p>
+                        
+                        <button id="formulaActionButton" onclick="startGame('formula')" class="btn btn-red w-full text-xl mt-4">START RACE</button>
+                    </div>
+
+                    <div class="card lg:col-span-2 flex flex-col items-center justify-center space-y-8 h-full min-h-[300px]">
+                        
+                        <div class="text-center">
+                            <p class="text-lg font-semibold text-gray-400">Race Multiplier</p>
+                            <p id="formulaMultiplierDisplay" class="font-orbitron text-7xl text-yellow-500 transition-colors">1.00x</p>
+                        </div>
+                        
+                        <div class="relative w-full h-24 flex items-center justify-center px-4">
+                            <div class="w-full h-8 bg-gray-700 border-t-2 border-dashed border-white absolute top-1/2 transform -translate-y-1/2"></div>
+                            <div id="raceCar" class="absolute left-4 top-1/2 transform -translate-y-1/2 text-4xl">
+                                🏎️
+                            </div>
+                            <div class="absolute right-4 top-1/2 transform -translate-y-1/2 text-2xl text-red-600 font-bold z-10">
+                                🏁
+                            </div>
+                        </div>
+
+                        <p class="text-sm text-gray-500 italic">The car's progress is visual; the crash point is determined by the multiplier alone.</p>
+
+                    </div>
+                </div>
+            </div> </div> <div id="resultCard" class="card text-center">
+            <p id="resultDisplay" class="text-lg font-bold text-gray-300">Place a bet and choose a game.</p>
+        </div>
+
+    </div> <div id="messageBox" class="fixed bottom-4 right-4 p-4 rounded-lg shadow-lg text-white opacity-0 pointer-events-none transition-opacity duration-300 bg-blue-500">
+        <p id="messageText">System Message</p>
+    </div>
+
+
+</body>
+</html>
+
