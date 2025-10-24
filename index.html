@@ -171,7 +171,7 @@
         // --- Game Data Definitions (UNCHANGED) ---
 
         const EDUCATION_TIERS = [
-            { id: 'None', name: 'None', cost: 0, bonus: 0 },
+            { id: 'None', name: 'None', cost: 0, studyTimeSec: 0 },
             { id: 'Diploma', name: 'High School Diploma', cost: 100, studyTimeSec: 10 },
             { id: 'Associate', name: 'Associate\'s Degree', cost: 5000, studyTimeSec: 60 },
             { id: 'Bachelor', name: 'Bachelor\'s Degree', cost: 50000, studyTimeSec: 180 },
@@ -293,13 +293,13 @@
 
         /** Saves the current game state to Firestore. */
         const saveGame = async () => {
-            if (!isGameReady) return;
+            if (!isGameReady || !userId) return;
             const saveRef = getSaveRef();
             if (saveRef) {
                 try {
                     gameState.lastSaveTime = Date.now();
                     await setDoc(saveRef, gameState);
-                    console.log(`Game saved successfully at ${new Date(gameState.lastSaveTime).toLocaleTimeString()}`);
+                    // console.log(`Game saved successfully at ${new Date(gameState.lastSaveTime).toLocaleTimeString()}`);
                 } catch (error) {
                     console.error("Error saving game:", error);
                 }
@@ -311,28 +311,31 @@
             const saveRef = getSaveRef();
             if (saveRef) {
                 onSnapshot(saveRef, (docSnap) => {
+                    // This listener may fire before the game loop starts as a safety measure, 
+                    // but usually fires after the game loop has started.
+                    
                     if (docSnap.exists()) {
                         const loadedState = docSnap.data();
-                        // Safely merge or replace state
+                        
+                        // 1. Merge or replace state
                         Object.assign(gameState, { ...defaultState, ...loadedState });
                         
-                        // Handle offline income if the game wasn't running
+                        // 2. Handle offline income 
                         const timeElapsed = Date.now() - gameState.lastSaveTime;
                         const ticksMissed = Math.floor(timeElapsed / (GAME_TICK_SECONDS * ONE_SECOND_MS));
                         if (ticksMissed > 0) {
                             processOfflineIncome(ticksMissed);
                         }
 
-                        console.log("Game state loaded/updated in real-time.");
-                        if (!isGameReady) {
-                            startGameLoop(); // Start loop only on first load
-                        }
+                        console.log("Cloud save loaded/updated in real-time.");
+                        showToast('Cloud save loaded.');
+
                     } else {
-                        console.log("No save data found. Starting new game.");
-                        if (!isGameReady) {
-                            startGameLoop();
-                        }
+                        console.log("No save data found. Using current default/local state.");
                     }
+                    
+                    // Always update UI after loading/merging data
+                    updateGameCalculations();
                 }, (error) => {
                     console.error("Error listening to game state:", error);
                 });
@@ -348,7 +351,7 @@
                 const totalOfflineIncome = passiveIncomePerTick * ticksMissed;
                 gameState.cash += totalOfflineIncome;
 
-                showToast(`Welcome back! Earned ${formatMoney(totalOfflineIncome)} while you were away over ${ticksMissed} intervals.`);
+                showToast(`💰 Welcome back! Earned ${formatMoney(totalOfflineIncome)} offline over ${ticksMissed} intervals.`);
             }
         };
 
@@ -386,20 +389,23 @@
             // 3. Update calculations and UI
             updateGameCalculations();
             
-            // 4. Auto-save
+            // 4. Auto-save (only if user ID is available)
             saveGame();
         };
 
-        /** Starts the main game loop and sets the ready flag. */
+        /** Starts the main game loop and sets the ready flag immediately. */
         const startGameLoop = () => {
             if (isGameReady) return; // Already running
             
+            // 1. Initial render and loop setup
             updateGameCalculations();
             gameLoopInterval = setInterval(gameLoop, GAME_TICK_SECONDS * ONE_SECOND_MS);
+            
+            // 2. Mark as ready and hide loading screen immediately to avoid delay
             isGameReady = true;
             document.getElementById('loading-state').classList.add('hidden');
             document.getElementById('app-content').classList.remove('hidden');
-            showToast('Game loaded! Welcome to The Ascent.');
+            showToast('Game started!');
         };
         
         /** Executes a player tap/click. */
@@ -410,6 +416,7 @@
             }
             gameState.cash += gameState.clickValue;
             updateGameCalculations();
+            saveGame(); // Also save on manual action
         };
         
         /** Purchases an item (Hustle Upgrade, Education, Real Estate, etc.). */
@@ -717,13 +724,17 @@
             }, 3000); // Duration before starting slide out
         };
 
-        // --- Initialization and Authentication (UNCHANGED) ---
+        // --- Initialization and Authentication (MODIFIED FOR FAST LOAD) ---
 
         /** Main function to set up authentication and game listeners. */
         const initApp = () => {
+            // 1. Core game starts immediately with default state to prevent perceived delay.
+            startGameLoop(); 
+
             // IMPORTANT: Call PWA setup immediately
             setupPWA();
-
+            
+            // 2. Start Firebase Authentication Process
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
                     userId = user.uid;
@@ -736,19 +747,25 @@
                 
                 if (!isAuthReady) {
                     isAuthReady = true;
+                    document.getElementById('user-id').textContent = userId;
                     console.log("Authentication ready. User ID:", userId);
-                    loadGame();
+                    // 3. Once authenticated, start the cloud data load process (asynchronously).
+                    loadGame(); 
                 }
             });
 
             // Attempt to sign in with custom token if available (Canvas environment)
             if (initialAuthToken) {
                 try {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                    console.log("Signed in with custom token.");
+                    // Try to sign in with custom token
+                    signInWithCustomToken(auth, initialAuthToken).catch(e => {
+                        console.error("Error signing in with custom token, falling back to anonymous:", e);
+                        signInAnonymously(auth);
+                    });
                 } catch (error) {
-                    console.error("Error signing in with custom token, falling back to anonymous:", error);
-                    await signInAnonymously(auth);
+                     // Catch synchronous errors here, though it's less common
+                    console.error("Synchronous error during custom token sign-in:", error);
+                    signInAnonymously(auth);
                 }
             } else {
                 // If token is not provided, sign in anonymously immediately
@@ -766,7 +783,7 @@
         window.getPassiveIncomePerTick = getPassiveIncomePerTick;
         window.formatMoney = formatMoney;
 
-        // Start the application initialization
+        // Start the application initialization when the DOM is ready
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
 
